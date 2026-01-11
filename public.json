@@ -1,0 +1,441 @@
+{
+  "broadcast": {
+    "message": "<yellow>欢迎使用Steamauto 5.0！<reset>"
+  },
+  "versions": [
+    {
+      "version": "5.5.7",
+      "changelog": "修改接受报价的一些错误提示",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.5.7/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.5.7/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "6cfc43384c2723409ad647d90bfb700fcc721f2cdeada9555d88451d327f366e",
+        "windows": "f20092b4f7f01279fbbb46a22b1fb7ea35e570e69b1e5b21071f9fe6ead6f91f"
+      }
+    },
+    {
+      "version": "5.5.6",
+      "changelog": "修复有时错误判断报价状态导致卡报价",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.5.6/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.5.6/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "d508b7f01b68179ea6f1aeaff8c29132da997eee82d9e5f2b1d8bf2b95595ca9",
+        "windows": "f3c5d2fc02bb0dc0627902f43d6733449c7cd7e879eaff9e31f1a2f9b186b372"
+      }
+    },
+    {
+      "version": "5.5.5",
+      "changelog": "修复了一些问题",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.5.5/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.5.5/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "e16c571bffa6e4f020c01131dbf9f9355d50eec7a4038b3a133808f093cad167",
+        "windows": "022d2802883a88c27677c03f4cc283e2e6c8a07509d4ac58fd157833790ec16b"
+      }
+    },
+    {
+      "version": "5.5.4",
+      "changelog": "解决悠悠uk失效后大量请求失败的问题",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.5.4/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.5.4/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "52bc0563d50a943e1dcbf1166772a0cf8ab35b6d43f5e387fb7bed13dfce04d3",
+        "windows": "3b39c6fe46ff15a875a531b8f80746eeee61d3121b3684cf910cc5cbae48dce0"
+      }
+    },
+    {
+      "version": "5.5.3",
+      "changelog": "修复被错误识别为非官方二进制构建; 修复悠悠自动上架插件导入失败",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.5.3/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.5.3/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "d0343c6786d53ac3203a9ab5f8a0df57f13fb33a635e1ec91daf67ef56206092",
+        "windows": "ed06e5bbff0be087ceb152c8f0418e67fd220c8b670fa9fce9eba32f355064a8"
+      }
+    },
+    {
+      "version": "5.5.2",
+      "changelog": "修复无法正常识别是否为源码运行",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.5.2/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.5.2/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "849ef0bc464fdfb462df26203258b742bb95fe6e3b6db43238f569e3e771deb3",
+        "windows": "0794e3fa6779ab345db71c66eb7014402cbe16084df05cb9d58b6eaec5311dc4"
+      }
+    },
+    {
+      "version": "5.5.1",
+      "changelog": "修复悠悠因修改接口导致自动上架不可用",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.5.1/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.5.1/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "9f02f9ec09f5aea4660ed8ace61873689d91e24e05b67e069d5c2f0bef88b9fd",
+        "windows": "11b508b9b2b84a321a0dc613436e1376bdf35dc6b6859f3fe1a41686a81f9ef8"
+      }
+    },
+    {
+      "version": "5.5.0",
+      "changelog": "修复出租上架失败; 翻新UUAutoSellItem.py，添加大量功能（请重新生成配置文件）; 为uuyoupinapi添加求购获取接口、电脑版价格获取接口; 修复如果自定义标题会导致自定义标题被显示两遍的问题",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.5.0/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.5.0/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "df83b64a65b12a830ca2c4e16ec7634f96630e5374a81a9630a1b71f0fe6f39a",
+        "windows": "4dd29440beabbe13f1ef42b7f190cb8fc24274181832a4bfe9a173aba8327849"
+      }
+    },
+    {
+      "version": "5.4.1",
+      "changelog": "修复BUFF求购订单无法供应",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.4.1/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.4.1/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "6bbe2c4abd1e9c05c3052b28e7991297b431c30e0f05651e0d55376ae37139c6",
+        "windows": "f7ee9442d871677efcc5c85b3465e6f52414c2d0e0d16a25eed061533fe704e6"
+      }
+    },
+    {
+      "version": "5.4.0",
+      "changelog": "BUFF自动发货现已经完全重写，减少了大量不必要的请求与功能，大大提升发货的稳定性。由于新的版本进行了大量的重构，因此旧版本的配置文件已经不再适用，建议删除配置文件重新生成！",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.4.0/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.4.0/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "15c740451db659724cc7b93129526859e07bce3b1c3fe6c87c9d20584a6e2584",
+        "windows": "538073e57e432ffcafcdb952594c5cb54c5e21b8390c7cc209664cb06299b65b"
+      }
+    },
+    {
+      "version": "5.3.6",
+      "changelog": "修复代理功能无法正常使用的问题",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.3.6/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.3.6/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "e2eda1a708f8bb5eefedda99a5483c3d275adfc1cb1d8b8c6977ffdbe3d43b1a",
+        "windows": "86f564ac33a81e1c3369f7869797cad1ab76e0f68f182a609fb87c7542079600"
+      }
+    },
+    {
+      "version": "5.3.5",
+      "changelog": "修复无法发送通知; 修复启动时提示导入失败",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.3.5/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.3.5/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "1df977b4f505679b26f47f5361dafb2f5a37b1c7b29ef5080a8ae54878576daa",
+        "windows": "133c54811bc642aedbe4d77ca4500a23afc8d14893a4a60741260afc6c9b9b8a"
+      }
+    },
+    {
+      "version": "5.3.4",
+      "changelog": "修复BUFF自动发货无法发送通知导致无法发货",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.3.4/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.3.4/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "a0c6b98bd400d715e6b7c1516ac5cf9a22fd42dafb0a4dff33bd197777d697d3",
+        "windows": "a25fce0a9fd68aea24be756c9440cf316748ad10a19e3d007121d6a55e82523c"
+      }
+    },
+    {
+      "version": "5.3.3",
+      "changelog": "修复内部插件配置被删除后识别为外部插件强制加载",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.3.3/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.3.3/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "cd4434b1f15852f1ca0038d494031ef7c0e063704e90af287276da7595f0a3b6",
+        "windows": "ba041f5e9653a540031adc94c5f2821b70cfefc5a01e3c137b9efd8ec241309d"
+      }
+    },
+    {
+      "version": "5.3.1",
+      "changelog": "完善插件动态加载机制",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.3.1/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.3.1/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "aea1477826818bb43169c3947a27066f241c5e46f48cc528f0fe8a0fe786f7a5",
+        "windows": "1ffc9d9815786e8966ea35bd23858729d700d945f6449d8296310b91d5d87462"
+      }
+    },
+    {
+      "version": "5.2.3",
+      "changelog": "修复在某些情况下自动同步失败导致插件崩溃的问题; 修复C5自动发货忽略报价功能无法使用问题; 修复悠悠赠送订单无法正确识别的问题",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.2.3/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.2.3/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "43d8bfe981dbdde865a2c55eb63b79234fc4b0b0e8b0e4da788eb96f568d5597",
+        "windows": "991454ee1ea0ffd41aa7d47572d18e4fe405a96d63885373e6c7ba9e87d6877e"
+      }
+    },
+    {
+      "version": "5.2.2",
+      "changelog": "修复如果Steam无法登录导致“闪退”",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.2.2/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.2.2/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "6b65c7c42b4b05c78948e9685b40543a80256cb763e2beb9afc96b4e27531680",
+        "windows": "1b303d292d9afe91040f51cd0ccbc0234a8288d82417e34a7714c87ec6fec994"
+      }
+    },
+    {
+      "version": "5.2.1",
+      "changelog": "Windows平台使用UPX压缩后发布; 修复首次打开Steamauto会报错的问题; 在尝试登录Steam之前检查配置文件是否有效",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.2.1/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.2.1/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "b897709e644fcbe6b7ce2ab485bcf1d9d0b67c2b271bd5700d36c6ae38348df0",
+        "windows": "72100afdd949b27c1499433d77e551eb3929af56e0bfec29b19a6e3c76561ba5"
+      }
+    },
+    {
+      "version": "5.2.0",
+      "changelog": "重新支持悠悠有品发送短信验证码; 允许发送通知时附带Steam账号信息; 修复一些已知问题",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.2.0/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.2.0/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "cec33cf49dc3c39f320972b595ef1e853df3c32c9761c40d7f41c4db8b01c1be",
+        "windows": "b798350dd7a90f5a2068fe1dc358217d5eada379def72497b0f87d6f1b4264c2"
+      }
+    },
+    {
+      "version": "5.1.4",
+      "changelog": "通过Steam登录BUFF功能已经可以正常使用，欢迎测试",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.1.4/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.1.4/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "6842594c065bfb78c847826bf8f4028aa1ad5588d4863c17f28fe65aa0fdd7be",
+        "windows": "aa2ac09dfa20717cce584661f57fb66ae6ce46ae071c937c3af444fac948b42c"
+      }
+    },
+    {
+      "version": "5.1.3",
+      "changelog": "修复上架超过200个物品时ECOsteam插件崩溃的问题; 修复悠悠日志有时过于冗长的问题",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.1.3/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.1.3/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "15b9e192c90df5bed03bbbc70c23227240554771abae90bab6948c2bc4a05afa",
+        "windows": "cfde9bd4f3347cda1ca8cb864204f0636f093b2194ca7af94bc83c80888e23e4"
+      }
+    },
+    {
+      "version": "5.1.2",
+      "changelog": "修复即使配置了通知器仍提示未配置的bug",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.1.2/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.1.2/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "f7dc17befd810dc2437bf035733447dc8be802ed6b298feb0c3f2550e1a8ec81",
+        "windows": "e6347f0d63d0f581d381a1c7e54c053f10270206d2aea4ac81d98deec17f53c4"
+      }
+    },
+    {
+      "version": "5.1.1",
+      "changelog": "修复未配置通知器导致程序线程崩溃的问题",
+      "level": "stable",
+      "significance": "important",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.1.1/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.1.1/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "264a26074ebf672337e2001a46aeb9b450656e5596b88467025e56e68de56c8c",
+        "windows": "bc3bf5778307d12446f87093066216c3556733b38d7ec297397d39c4e3db8ff0"
+      }
+    },
+    {
+      "version": "5.1.0",
+      "changelog": "1.新推出统一管理推送功能，将config.json5删除并重新生成后可以体验。在最新版可以自动推送账号失效、发货失败等问题; 2.修复ECOsteam插件在某些情况下崩溃的问题",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.1.0/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.1.0/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "5303626c2e8dbda728a238fe697990724ffdaf8cd0bba2d14e6461159dc93e52",
+        "windows": "8134fd622855443234869f8668f71921a73ab4d0063347005fcd555acae6546c"
+      }
+    },
+    {
+      "version": "5.0.7",
+      "changelog": "修复自定义插件无法使用; 提高ECOsteam插件的稳定性; ",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.0.7/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.0.7/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "1099ccd7c2571f63a1fc11402e855025a8a13b871939a6c3e6116e2f7d1b28d2",
+        "windows": "fdfc303dd889721970158d10785811fd4168549961568ff5b7159391bcdc785d"
+      }
+    },
+    {
+      "version": "5.0.6",
+      "changelog": "修复无法正常登录Steam",
+      "level": "stable",
+      "significance": "important",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.0.6/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.0.6/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "7cc6d2258ae2e1e4dc9c787dd1c53a1eabbc892046c79600e518a1b1ecfdb9ea",
+        "windows": "99febb0f3563ba33f7cfe91ea72254d99569422e65148879f6a2522c042f6285"
+      }
+    },
+    {
+      "version": "5.0.5",
+      "changelog": "修复重新登录后卡死",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.0.5/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.0.5/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "3bbf1d06f4a70311c235f90435b1ed674c98f6ebf77f3c5bd5e79bd8f3270a4f",
+        "windows": "38d35140de41f764aa09f940f251beedd6e8b7f557be6519d6e0bf49d991384c"
+      }
+    },
+    {
+      "version": "5.0.4",
+      "changelog": "捕获已经接受过的报价所导致的异常",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.0.4/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.0.4/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "8874d0ad43ce305ce786641079f31c88d99d46cf476c0e3e768d3383ce4f19f1",
+        "windows": "d23abc1af19954d061fb4e4568708a5e72732f6a1ae8cee008bd0dbb65c373b5"
+      }
+    },
+    {
+      "version": "5.0.3",
+      "changelog": "1.修复Steam有时无法自动重新登录\\n2.有时已经为最新版本但是提示不是最新版 ",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.0.3/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.0.3/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "58146a885d5b2875bd43c4fbe462d10a821dddb89728b6ec4048606b6d436a32",
+        "windows": "cc14d35ab80ab395064aaf8f1e32560e0c5b98961ccbe5ef690f1b2bf945c247"
+      }
+    },
+    {
+      "version": "5.0.2",
+      "changelog": "1. 增强稳定性，Steam出现登录失效后全自动重登  \\n2.统一管理Steam Client实例，新建utils/steam_client.py  \\n3.实现自动更新，程序运行时定期检查更新，若有致命BUG强提醒告知用户  \\n4.实现广告投放，程序运行时每隔一段时间输出广告",
+      "level": "stable",
+      "significance": "important",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.0.2/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.0.2/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "44c833a3e63058d344a76973068f2346848a786c61a212473f79c528d679a1e4",
+        "windows": "5de39d76bc79a24a9292fc964bc7c869e8d4469a6594040987deaac42a677f5a"
+      }
+    },
+    {
+      "version": "5.0.1",
+      "changelog": "过渡版本",
+      "level": "stable",
+      "significance": "minor",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.0.1/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.0.1/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "51621536e7452530400f89649659bc045a8f91916927097f1a61f040cdf5fcdf",
+        "windows": "626f22b9d739c071ac99953d389ed9ad0612240db94d7826048f834a89c75541"
+      }
+    }
+  ]
+}

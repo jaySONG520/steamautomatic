@@ -1,0 +1,84 @@
+name: Pre-release
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  Build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@main
+        with:
+          python-version: "3.12"
+
+      - name: Install UPX (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          $url = "https://github.com/upx/upx/releases/download/v5.0.0/upx-5.0.0-win64.zip"
+          $output = "upx.zip"
+          Invoke-WebRequest -Uri $url -OutFile $output
+          Expand-Archive -Path $output -DestinationPath C:\upx_temp
+          New-Item -ItemType Directory -Path C:\upx -Force
+          Move-Item C:\upx_temp\upx-5.0.0-win64\* C:\upx -Force
+          Remove-Item C:\upx_temp, $output -Recurse -Force
+
+      - name: Install requirements and build
+        shell: bash
+        env:
+          MATRIX_OS: ${{ matrix.os }}
+        run: |
+          pip install pyinstaller
+          pip install -r requirements.txt
+          python .github/scripts/add_build_info.py
+          
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            pyinstaller build.spec --upx-dir C:\\upx
+          else
+            pyinstaller build.spec
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@main
+        with:
+          name: ${{ matrix.os }}-dist
+          path: dist
+  Publish:
+    needs: Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Repository Dispatch
+        uses: peter-evans/repository-dispatch@main
+        with:
+          token: ${{ secrets.PAT }}
+          repository: jiajiaxd/Steamauto-Tutorial
+          event-type: Sync
+          
+      - name: Download artifacts
+        uses: actions/download-artifact@main
+        with:
+          path: ./Steamauto
+
+      - name: Finalization
+        run: |
+          sudo timedatectl set-timezone "Asia/Shanghai"
+          echo "DATE=$(date +"%Y%m%d-%H%M")" >> $GITHUB_ENV
+          mkdir releases
+          mv Steamauto/windows-latest-dist/* releases/
+          mv Steamauto/ubuntu-latest-dist/* releases/
+
+      - name: Upload to Github Releases
+        uses: ncipollo/release-action@main
+        with:
+          commit: "master"
+          tag: ${{ env.DATE }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          artifacts: releases/*
+          prerelease: true

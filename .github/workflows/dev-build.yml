@@ -1,0 +1,34 @@
+name: Dev & Test Build
+on:
+  push:
+    branches: [dev, test]
+  workflow_dispatch:
+jobs:
+  Build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@main
+        with:
+          python-version: "3.12"
+
+      - name: Install requirements and build
+        env:
+          MATRIX_OS: ${{ matrix.os }}
+        run: |
+          pip install pyinstaller
+          pip install -r requirements.txt
+          python .github/scripts/add_build_info.py
+          pyinstaller build.spec
+
+      - name: Upload artifacts~
+        uses: actions/upload-artifact@main
+        with:
+          name: ${{ matrix.os }}-dist
+          path: dist
