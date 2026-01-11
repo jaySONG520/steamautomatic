@@ -2,6 +2,7 @@ import importlib
 import importlib.util
 import inspect
 import os
+import random
 import re
 import shutil
 import signal
@@ -18,6 +19,7 @@ from steampy.client import SteamClient
 from utils.code_updater import attempt_auto_update_github
 from utils.logger import handle_caught_exception, logger
 from utils.notifier import send_notification
+from utils.old_version_patches import patch
 from utils.static import (
     BUILD_INFO,
     CONFIG_FILE_PATH,
@@ -30,9 +32,10 @@ from utils.static import (
     SESSION_FOLDER,
     STEAM_ACCOUNT_INFO_FILE_PATH,
 )
-from utils.old_version_patches import patch
 from utils.steam_client import login_to_steam, steam_client_mutex
 from utils.tools import calculate_sha256, exit_code, get_encoding, jobHandler, pause
+
+config = {}
 
 
 def handle_global_exception(exc_type, exc_value, exc_traceback):
@@ -56,7 +59,7 @@ def init_files_and_params() -> int:
     logger.info("欢迎使用Steamauto Github仓库:https://github.com/Steamauto/Steamauto")
     logger.info("欢迎加入Steamauto 官方QQ群 群号: 425721057")
     logger.info("若您觉得Steamauto好用, 请给予Star支持, 谢谢! \n")
-    logger.info(f"{Fore.RED+Style.BRIGHT}！！！ 本程序完全{Fore.YELLOW}免费开源 {Fore.RED}若有人向你售卖，请立即投诉并申请退款 ！！！ \n")
+    logger.info(f"{Fore.RED + Style.BRIGHT}！！！ 本程序完全{Fore.YELLOW}免费开源 {Fore.RED}若有人向你售卖，请立即投诉并申请退款 ！！！ \n")
     logger.info(f"当前版本: {CURRENT_VERSION}   编译信息: {BUILD_INFO}")
     try:
         with open(CONFIG_FILE_PATH, "r", encoding=get_encoding(CONFIG_FILE_PATH)) as f:
@@ -64,7 +67,7 @@ def init_files_and_params() -> int:
     except:
         config = {}
     if config.get("source_code_auto_update", False):
-        if not hasattr(sys, '_MEIPASS'):
+        if not hasattr(sys, "_MEIPASS"):
             attempt_auto_update_github(CURRENT_VERSION)
     else:
         try:
@@ -73,7 +76,7 @@ def init_files_and_params() -> int:
             cloud_service.checkVersion()
             cloud_service.getAds()
         except Exception as e:
-            logger.warning('无法使用云服务')
+            logger.warning("无法使用云服务")
     logger.info("正在初始化...")
     first_run = False
     if not os.path.exists(CONFIG_FOLDER):
@@ -114,7 +117,7 @@ def init_files_and_params() -> int:
 @no_type_check
 def get_plugins_folder():
     base_path = os.path.dirname(os.path.abspath(__file__))
-    if hasattr(sys, '_MEIPASS'):
+    if hasattr(sys, "_MEIPASS"):
         base_path = os.path.dirname(sys.executable)
         if not os.path.exists(os.path.join(base_path, PLUGIN_FOLDER)):
             shutil.copytree(os.path.join(sys._MEIPASS, PLUGIN_FOLDER), os.path.join(base_path, PLUGIN_FOLDER))
@@ -123,17 +126,21 @@ def get_plugins_folder():
             for plugin in plugins:
                 plugin_absolute = os.path.join(sys._MEIPASS, PLUGIN_FOLDER, plugin)
                 local_plugin_absolute = os.path.join(base_path, PLUGIN_FOLDER, plugin)
+                if os.path.isdir(plugin_absolute):
+                    continue
+                if os.path.isdir(local_plugin_absolute):
+                    continue
                 if not os.path.exists(local_plugin_absolute):
                     shutil.copy(plugin_absolute, local_plugin_absolute)
                 else:
                     local_plugin_sha256 = calculate_sha256(local_plugin_absolute)
                     plugin_sha256 = calculate_sha256(plugin_absolute)
                     if local_plugin_sha256 != plugin_sha256:
-                        if plugin not in config.get('plugin_whitelist', []):
-                            logger.info('检测到插件' + plugin + '有更新，已自动更新 如果不需要更新请在配置文件中将该插件加入白名单')
+                        if plugin not in config.get("plugin_whitelist", []):
+                            logger.info("检测到插件" + plugin + "有更新，已自动更新 如果不需要更新请在配置文件中将该插件加入白名单")
                             shutil.copy(plugin_absolute, local_plugin_absolute)
                         else:
-                            logger.info('插件' + plugin + '与本地版本不同 由于已被加入白名单，不会自动更新')
+                            logger.info("插件" + plugin + "与本地版本不同 由于已被加入白名单，不会自动更新")
     return os.path.join(base_path, PLUGIN_FOLDER)
 
 
@@ -176,15 +183,15 @@ def camel_to_snake(name):
         return "ecosteam"
     if name == "ECOsteam":  # 特殊处理
         return "ecosteam"
-    s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
-    return re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
+    s1 = re.sub("(.)([A-Z][a-z]+)", r"\1_\2", name)
+    return re.sub("([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
 
 
 def get_plugin_classes():
     plugin_classes = {}
     for name, obj in sys.modules.items():
         if name.startswith(f"{PLUGIN_FOLDER}.") and name != f"{PLUGIN_FOLDER}.__init__":
-            plugin_name = name.replace(f"{PLUGIN_FOLDER}.", '')
+            plugin_name = name.replace(f"{PLUGIN_FOLDER}.", "")
             plugin_name = camel_to_snake(plugin_name)
             plugin_classes[plugin_name] = obj
     # 返回的文件结构：
@@ -204,7 +211,7 @@ def get_plugins_enabled(steam_client: SteamClient, steam_client_mutex):
         # 判断配置文件里是否存在 plugin_key 且已启用
         if (plugin_key in config and config[plugin_key].get("enable")) or ((plugin_key not in config) and (plugin_key not in INTERNAL_PLUGINS)):
             if plugin_key not in config:
-                logger.info(f'已加载自定义插件 {plugin_key}')
+                logger.info(f"已加载自定义插件 {plugin_key}")
             # 遍历插件模块里的所有类
             for cls_name, cls_obj in inspect.getmembers(plugin_module, inspect.isclass):
                 # 根据构造函数的形参，对号入座。用kwargs可以避免顺序不一致的问题
@@ -252,15 +259,7 @@ def plugins_check(plugins_enabled):
     return 1
 
 
-def get_steam_client_mutexs(num):
-    steam_client_mutexs = []
-    for i in range(num):
-        steam_client_mutexs.append(threading.Lock())
-    return steam_client_mutexs
-
-
-def init_plugins_and_start(steam_client, steam_client_mutex):
-    plugins_enabled = get_plugins_enabled(steam_client, steam_client_mutex)
+def init_plugins_and_start(plugins_enabled):
     logger.info("初始化完成, 开始运行插件!")
     print("\n")
     time.sleep(0.1)
@@ -271,8 +270,11 @@ def init_plugins_and_start(steam_client, steam_client_mutex):
         for plugin in plugins_enabled:
             threads.append(threading.Thread(target=plugin.exec))
         for thread in threads:
+            random_jitter = random.randint(0, 10)
             thread.daemon = True
             thread.start()
+            logger.info(f"插件线程 {thread.name} 已启动，等待 {random_jitter} 秒后启动下一个插件线程...")
+            time.sleep(random_jitter)
         for thread in threads:
             thread.join()
     if exit_code.get() != 0:
@@ -308,14 +310,15 @@ def main():
         return 0
 
     steam_client = None
+    steam_client = SteamClient("")
     steam_client = login_to_steam(config)
     if steam_client is None:
-        send_notification('登录Steam失败，程序停止运行')
+        send_notification(steam_client, "登录Steam失败，程序停止运行")
         pause()
         return 1
     # 仅用于获取启用的插件
     import_all_plugins()
-    plugins_enabled = get_plugins_enabled(steam_client, steam_client_mutex)
+    plugins_enabled = get_plugins_enabled(steam_client, steam_client_mutex.get(steam_client.username))
     # 检查插件是否正确初始化
     plugins_check_status = plugins_check(plugins_enabled)
     if plugins_check_status == 0:
@@ -324,8 +327,8 @@ def main():
         return 1
 
     if steam_client is not None:
-        send_notification('Steamauto 已经成功登录Steam并开始运行')
-        init_plugins_and_start(steam_client, steam_client_mutex)
+        send_notification(steam_client, "Steamauto 已经成功登录Steam并开始运行")
+        init_plugins_and_start(plugins_enabled)
 
     logger.info("由于所有插件已经关闭,程序即将退出...")
     pause()

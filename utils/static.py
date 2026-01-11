@@ -6,27 +6,24 @@ from utils.build_info import info
 is_latest_version = False
 no_pause = False
 
-CURRENT_VERSION = "5.5.7"
+CURRENT_VERSION = "5.8.1"
 
 VERSION_FILE = "version.json"
 LOGS_FOLDER = "logs"
 CONFIG_FOLDER = "config"
 PLUGIN_FOLDER = "plugins"
 CONFIG_FILE_PATH = os.path.join(CONFIG_FOLDER, "config.json5")
-BUFF_COOKIES_FILE_PATH = os.path.join(CONFIG_FOLDER, "buff_cookies.txt")
-UU_TOKEN_FILE_PATH = os.path.join(CONFIG_FOLDER, "uu_token.txt")
+BUFF_COOKIES_FILE_PATH = os.path.join(CONFIG_FOLDER, "buff_cookies_{steam_username}.txt")
+UU_TOKEN_FILE_PATH = os.path.join(CONFIG_FOLDER, "uu_token_{steam_username}.txt")
 STEAM_ACCOUNT_INFO_FILE_PATH = os.path.join(CONFIG_FOLDER, "steam_account_info.json5")
-STEAM_INVENTORY_FILE_PATH = os.path.join(CONFIG_FOLDER, "steam_inventory.json5")
 SESSION_FOLDER = "session"
+os.makedirs(SESSION_FOLDER, exist_ok=True)
 SUPPORT_GAME_TYPES = [{"game": "csgo", "app_id": 730}, {"game": "dota2", "app_id": 570}]
-UU_ARG_FILE_PATH = "uu.txt"
 ECOSTEAM_RSAKEY_FILE = os.path.join(CONFIG_FOLDER, "rsakey.txt")
 BUILD_INFO = info
 if BUILD_INFO == "正在使用源码运行":
     if hasattr(sys, "_MEIPASS"):
         BUILD_INFO = "非官方二进制构建运行"
-STEAM_ACCOUNT_NAME = "暂未登录"
-STEAM_64_ID = "暂未登录"
 INTERNAL_PLUGINS = [
     "buff_auto_accept_offer",
     "buff_auto_comment",
@@ -106,7 +103,9 @@ DEFAULT_CONFIG_JSON = r"""
     // 每次检查是否有新报价的间隔（轮询间隔），单位为秒
     "interval": 300,
     // 是否开启dota2支持
-    "dota2_support": false
+    "dota2_support": false,
+    // 是否使用全局代理设置中的代理连接BUFF
+    "use_proxies": false
   },
   // BUFF 自动备注购买价格插件配置
   "buff_auto_comment": {
@@ -178,7 +177,9 @@ DEFAULT_CONFIG_JSON = r"""
     // 悠悠有品自动发货功能是否启用，默认为false
     "enable": false,
     // 每次检查是否有新报价的间隔（轮询间隔），单位为秒
-    "interval": 300
+    "interval": 300,
+    //是否使用全局代理设置中的代理连接悠悠有品
+    "use_proxies": false,
   },
   // 悠悠有品租赁自动上架配置
   "uu_auto_lease_item": {

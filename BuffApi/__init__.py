@@ -24,6 +24,7 @@ from BuffApi import models
 
 logger = PluginLogger("BuffApi")
 
+
 def get_ua():
     first_num = random.randint(55, 62)
     third_num = random.randint(0, 3200)
@@ -48,8 +49,10 @@ def get_ua():
     )
     return ua
 
+
 def get_random_header() -> dict:
     return {"User-Agent": get_ua()}
+
 
 class BuffAccount:
     """
@@ -62,24 +65,47 @@ class BuffAccount:
     附：
     Buff的每个商品的每种磨损（品质）均有一个独立的goods_id,每一件商品都有一个独立的id
     """
-    
+
     BASE_URL = "https://buff.163.com"
 
-    def __init__(self, buffcookie, user_agent=get_ua()):
+    def __init__(self, buffcookie, user_agent=None, proxies=None):
+        if not user_agent:
+            user_agent = get_ua()
+        if proxies:
+            logger.info("检测到Buff代理设置，正在为Buff设置相同的代理...")
         self.session = requests.session()
+        self.session.proxies = proxies
         self.session.headers = {"User-Agent": user_agent}
         headers = copy.deepcopy(self.session.headers)
         headers["Cookie"] = buffcookie
         self.get_notification(headers=headers)
 
     def get(self, url, **kwargs):
-        response = self.session.get(url, **kwargs)
-        logger.debug(f"GET {url} {response.status_code} {json.dumps(response.json(),ensure_ascii=False)}")
+        # 如果没有timeout，则设置默认timeout为10秒
+        if "timeout" not in kwargs:
+            kwargs["timeout"] = 10
+        for i in range(10):
+            response = self.session.get(url, **kwargs)
+            logger.debug(f"GET {url} {response.status_code} {json.dumps(response.json(), ensure_ascii=False)}")
+            if "系统繁忙" in response.text:
+                logger.warning(f"BUFF接口繁忙，正在重试...{i + 1}/10")
+                time.sleep(2)
+            else:
+                break
         return response
 
     def post(self, url, **kwargs):
-        response = self.session.post(url, **kwargs)
-        logger.debug(f"POST {url} {response.status_code} {json.dumps(response.json(),ensure_ascii=False)}")
+        # 如果没有timeout，则设置默认timeout为10秒
+        if "timeout" not in kwargs:
+            kwargs["timeout"] = 10
+        for i in range(5):
+            response = self.session.post(url, **kwargs)
+            logger.debug(f"POST {url} {response.status_code} {json.dumps(response.json(), ensure_ascii=False)}")
+            if "系统繁忙" in response.text:
+                logger.warning(f"BUFF接口繁忙，正在重试...{i + 1}/10")
+                time.sleep(2)
+            else:
+                break
         return response
 
     def get_user_nickname(self) -> str:
@@ -109,23 +135,16 @@ class BuffAccount:
         headers = self.CSRF_Fucker()
         headers["Referer"] = f"{self.BASE_URL}/user-center/profile"
         data = {"force_buyer_send_offer": "true"}
-        
-        resp = self.post(
-            f"{self.BASE_URL}/account/api/prefer/force_buyer_send_offer",
-            json=data,
-            headers=headers
-        )
-        
+
+        resp = self.post(f"{self.BASE_URL}/account/api/prefer/force_buyer_send_offer", json=data, headers=headers)
+
         if resp.status_code == 200 and resp.json()["code"] == "OK":
             return True
         return False
 
     def get_sell_order_to_deliver(self, game: str, appid: Union[str, int]) -> Dict:
         """获取等待发货的订单"""
-        params = {
-            "game": game,
-            "appid": str(appid)
-        }
+        params = {"game": game, "appid": str(appid)}
         response = self.get(f"{self.BASE_URL}/api/market/sell_order/to_deliver", params=params)
         if response.status_code == 200:
             data = response.json()
@@ -135,10 +154,7 @@ class BuffAccount:
 
     def get_sell_order_history(self, appid: Union[str, int]) -> List:
         """获取销售历史记录"""
-        params = {
-            "appid": str(appid),
-            "mode": "1"
-        }
+        params = {"appid": str(appid), "mode": "1"}
         response = self.get(f"{self.BASE_URL}/api/market/sell_order/history", params=params)
         if response.status_code == 200:
             data = response.json()
@@ -318,7 +334,14 @@ class BuffAccount:
         """
         if headers:
             self.session.headers = headers
-        return json.loads(self.get(f"{self.BASE_URL}/api/message/notification").text).get("data")
+        response = self.get(f"{self.BASE_URL}/api/message/notification")
+        data = response.json()
+        if response.status_code == 200:
+            return data["data"]
+        elif "error" in data:
+            return data
+        else:
+            return {}
 
     def get_steam_trade(self) -> list:
         response = self.get(f"{self.BASE_URL}/api/market/steam_trade")
@@ -424,5 +447,5 @@ class BuffAccount:
                 "Content-Type": "application/json",
                 "Referer": f"{self.BASE_URL}/market/sell_order/create?game=csgo",
             }
-        )  
+        )
         return headers

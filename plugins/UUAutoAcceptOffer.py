@@ -10,58 +10,56 @@ from utils.uu_helper import get_valid_token_for_uu
 
 class UUAutoAcceptOffer:
     def __init__(self, steam_client, steam_client_mutex, config):
-        self.logger = PluginLogger("UUAutoAcceptOffer")
+        self.logger = PluginLogger(f"UUAutoAcceptOffer-steam:{steam_client.username}")
         self.steam_client = steam_client
         self.steam_client_mutex = steam_client_mutex
         self.config = config
 
     def init(self) -> bool:
-        token = get_valid_token_for_uu()
+        proxies = None
+        if self.config["use_proxies"]:
+            proxies = self.config["proxies"]
+        token = get_valid_token_for_uu(self.steam_client, proxies=proxies)
         if not token:
             self.logger.error("悠悠有品登录失败！即将关闭程序！")
             exit_code.set(1)
             return True
+        self.uuyoupin = uuyoupinapi.UUAccount(token, proxy=proxies)
+        self.logger = PluginLogger(f"UUAutoAcceptOffer-{self.uuyoupin.get_user_nickname()}-steam:{self.steam_client.username}")
         return False
 
     def exec(self):
-        uuyoupin = None
-        token = get_valid_token_for_uu()
-        if not token:
-            self.logger.error("由于登录失败，插件将自动退出")
-            exit_code.set(1)
-            return 1
-        else:
-            uuyoupin = uuyoupinapi.UUAccount(token)
-        ignored_offer = []
+        ignored_offer = {}
         interval = self.config["uu_auto_accept_offer"]["interval"]
-        if uuyoupin is not None:
+        if self.uuyoupin is not None:
             while True:
                 try:
-                    uuyoupin.send_device_info()
+                    self.uuyoupin.send_device_info()
                     self.logger.info("正在检查悠悠有品待发货信息...")
-                    uu_wait_deliver_list = uuyoupin.get_wait_deliver_list()
+                    uu_wait_deliver_list = self.uuyoupin.get_wait_deliver_list()
                     len_uu_wait_deliver_list = len(uu_wait_deliver_list)
                     self.logger.info("" + str(len_uu_wait_deliver_list) + "个悠悠有品待发货订单")
                     if len(uu_wait_deliver_list) != 0:
                         for item in uu_wait_deliver_list:
                             accepted = False
-                            self.logger.info(f"正在接受悠悠有品待发货报价, 商品名: {item['item_name']}, " f"报价ID: {item['offer_id']}")
+                            self.logger.info(f"正在接受悠悠有品待发货报价, 商品名: {item['item_name']}, 报价ID: {item['offer_id']}")
                             if item["offer_id"] is None:
                                 self.logger.warning("此订单为需要手动发货(或异常)的订单, 不能自动处理, 跳过此订单! ")
-                            elif item["offer_id"] in ignored_offer:
-                                self.logger.info("此交易报价已经被Steamauto处理过, 出现此提示的原因" "是悠悠系统延迟或者该订单为批量购买订单.这不是一个报错!")
+                            elif item["offer_id"] in ignored_offer and ignored_offer[item["offer_id"]] <= 10:
+                                self.logger.info("此交易报价已经被Steamauto处理过, 出现此提示的原因是悠悠系统延迟或者该订单为批量购买订单.这不是一个报错!")
+                                ignored_offer[item["offer_id"]] += 1
                             else:
-                                if accept_trade_offer(self.steam_client, self.steam_client_mutex, str(item["offer_id"]), desc="发货平台：悠悠有品"):
-                                    ignored_offer.append(item["offer_id"])
-                                    self.logger.info(f'接受报价[{str(item["offer_id"])}]完成!')
+                                if accept_trade_offer(self.steam_client, self.steam_client_mutex, str(item["offer_id"]), desc=f"发货平台：悠悠有品\n发货饰品：{item['item_name']}"):
+                                    ignored_offer[str(item["offer_id"])] = 1
+                                    self.logger.info(f"接受报价[{str(item['offer_id'])}]完成!")
                                     accepted = True
                             if (uu_wait_deliver_list.index(item) != len_uu_wait_deliver_list - 1) and accepted:
                                 self.logger.info("为了避免频繁访问Steam接口, 等待5秒后继续...")
                                 time.sleep(5)
                 except Exception as e:
-                    if '登录状态失效，请重新登录' in str(e):
+                    if "登录状态失效，请重新登录" in str(e):
                         handle_caught_exception(e, "UUAutoAcceptOffer", known=True)
-                        send_notification('检测到悠悠有品登录已经失效,请重新登录', title='悠悠有品登录失效')
+                        send_notification(self.steam_client, "检测到悠悠有品登录已经失效,请重新登录", title="悠悠有品登录失效")
                         self.logger.error("检测到悠悠有品登录已经失效,请重新登录")
                         self.logger.error("由于登录失败，插件将自动退出")
                         exit_code.set(1)

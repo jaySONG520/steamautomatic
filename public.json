@@ -4,6 +4,244 @@
   },
   "versions": [
     {
+      "version": "5.8.1",
+      "changelog": "修复部分插件无法导入导致程序无法启动的问题",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.8.1/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.8.1/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "d53d35e6fbcafe8b137c447da3b5605e95a1cd28369123f9256ecd1bf07c7658",
+        "windows": "b4dbc92da214ffb26cd035f434a245c0505b254b0f53c4fdd01c69fec5a276b3"
+      }
+    },
+    {
+      "version": "5.8.0",
+      "changelog": "1.修复悠悠有品无法发货的问题\\n2.日志支持显示Steam账号\\n3.支持本地生成有品UK\\n4.代码优化",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.8.0/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.8.0/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "58c74136223b2ce39860720dfdd30a92e3efc234c6cec55e280f50c4a2b6f33d",
+        "windows": "9f845e0f76db035197110605f7a67d700aa6ddc86cd3449d6591a957d77f7985"
+      }
+    },
+    {
+      "version": "5.7.6",
+      "changelog": "修复Steam登录BUFF时如果权限不足，不自动回退到扫码登录",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.7.6/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.7.6/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "d677dc7d90cf1b9a6353a7a94bf8eebf1dadd24e8f98950f2437a9d3fd02a925",
+        "windows": "4335f07b1a609ed0a1e7b20dddd519decd1b95526994941230e6e480b544a06e"
+      }
+    },
+    {
+      "version": "5.7.5",
+      "changelog": "修复BUFF系统繁忙情况下完全无法发货",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.7.5/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.7.5/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "04b4d1ae011a913a1f99aed72380e0654e485bf69629190ede7c82229e1d4caa",
+        "windows": "7bd49a3941914cf65f5f3a04a8abedf93e6067a64008a6015455bb6ee74381c0"
+      }
+    },
+    {
+      "version": "5.7.4",
+      "changelog": "修复有品系统验证中订单被错误当成待发货订单",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.7.4/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.7.4/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "33aa746963558f14682654eee3b58cfd9f4e4fb9c360938a57bd9b9f2660e8ea",
+        "windows": "38bc764d91ab35b2d5893820bf8bb3cf0d648236fc599f3fdc3dd7df96e50ac4"
+      }
+    },
+    {
+      "version": "5.7.3",
+      "changelog": "修复无法自动生成配置文件、报错指示错误的问题",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.7.3/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.7.3/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "4a09b81691d824220d929c2979d56af85f7b0dafe0946f8dc3c406276dd8902a",
+        "windows": "38b6fd965051a92769b90aeb7c975bf2fca0e8a3811ca3493efcd9f7238cccb2"
+      }
+    },
+    {
+      "version": "5.7.2",
+      "changelog": "修复BUFF提示请求繁忙时报错的问题",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.7.2/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.7.2/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "ba8a2f0291b283cc04cd649f292180b7777b96083655154a9bc6d23ac69a3797",
+        "windows": "4d5f27e301ef8df2eb7006a7f2e3fa0e1bc930a0573e37cc5f99e514b83189a0"
+      }
+    },
+    {
+      "version": "5.7.1",
+      "changelog": "修复Steam登录失效后无法自动刷新的问题",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.7.1/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.7.1/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "9a0ccb0a9727f89b63509964a04d229eab40b1a96182f11ef60957cf90b96ff4",
+        "windows": "22e2df7a55bd9bfdc2a375f57277dde81a0ae58823ed67d03f6f9d8b5095f507"
+      }
+    },
+    {
+      "version": "5.7.0",
+      "changelog": "优化Steam的Token刷新机制和报价接受重试机制，提供更稳定的报价处理体验",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.7.0/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.7.0/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "2d18bb5ea5fc1375c286b189fe6647576d1bcd8efc94f64f644638482c1aa9cd",
+        "windows": "d6319d425bf68d0b60072ea336f0e402572b6ce70dd2798d30be0a456643849d"
+      }
+    },
+    {
+      "version": "5.6.5",
+      "changelog": "提供更稳定的Steam登录体验：为steampy增加refreshToken登录的支持; 更改登录信息缓存的方式",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.6.5/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.6.5/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "31e85bc02e1bc3107fc526150df2865b3bb773f7ff4cf1de3dbae196ef6d72da",
+        "windows": "b5763452839999b9e01af2a68e740b9440af8529b2f0b61fec29aceeb0569873"
+      }
+    },
+    {
+      "version": "5.6.4",
+      "changelog": "ECO自动发货：未发送报价订单自动发送; 修复BUFF自动发货插件SyntaxError",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.6.4/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.6.4/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "4b04e8faa556992c243957b0632059c815a94aba6c897986fe8d1ee6cddc38dc",
+        "windows": "6fc87edd471a7014e51652882c8ba587b7e92dd0ce0dfc328d6ef7c8c067fd58"
+      }
+    },
+    {
+      "version": "5.6.3",
+      "changelog": "自动确认更新后的防盗提示",
+      "level": "stable",
+      "significance": "important",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.6.3/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.6.3/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "1b2a62db908fd420d8fbf79c4a10673d0ba5002883ac6084993fc3741c86bd84",
+        "windows": "f529979fbcab20f2c43e399a722f0dcf237b85cf6890cc0755f07d29721ad8ec"
+      }
+    },
+    {
+      "version": "5.6.2",
+      "changelog": "BUFF自动发货支持多Steam账号; 修复了plugins文件夹内有文件夹会导致程序无法正常启动; 修复了悠悠有品在特定情况下无法发货的bug",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.6.2/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.6.2/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "e2beaa3ba7efa89b11989ab591b2d4512769d3ac7ad06fe093be8572b5c04a22",
+        "windows": "b5040fcf77dd14ef57657ff976a101973a1b351a14289698b84380c2697b63d0"
+      }
+    },
+    {
+      "version": "5.6.1",
+      "changelog": "修复Steam库存获取异常",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.6.1/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.6.1/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "a7b4096616d4cdf3ebbb3a5835ee0b84cf8cf1cb095760f9a2b0d0c93eb5cc39",
+        "windows": "a280ded7ce8409c17e44681769d5b5dbd3ced5de9fbe330c74437887ae0c0af7"
+      }
+    },
+    {
+      "version": "5.6.0",
+      "changelog": "优化悠悠有品相关功能",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.6.0/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.6.0/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "c2619271359dd90df126bb3c761f675753a05838c249d2bca9add8f350c56b85",
+        "windows": "43c64233ac1854b4f836cf5210f473c35789de070a5d3de76c7b873b89658b37"
+      }
+    },
+    {
+      "version": "5.5.9",
+      "changelog": "修复悠悠无法获取缓存的token",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.5.9/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.5.9/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "6038139bdf63fae28879491bea8997f2f11aa1ade5fd4725f3d5928565c7e5d8",
+        "windows": "b1f2af5420d4ec292554621280d0326ef056ccd1325e76a71d1ca8d1848d09d9"
+      }
+    },
+    {
+      "version": "5.5.8",
+      "changelog": "修复悠悠发送验证码失败后不自动回退手动发送",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "linux": "https://github.com/Steamauto/Steamauto/releases/download/5.5.8/Steamauto-ubuntu-latest",
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.5.8/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "linux": "ddb7fc2bb7cbf07ed8f10cc2592dc00a72afba320c29f23a318f735ad9e7c18f",
+        "windows": "d1a9a237e7f49187cf10bbe526cda974ed887fc0eaf69e601c39ca1db25c15e4"
+      }
+    },
+    {
       "version": "5.5.7",
       "changelog": "修改接受报价的一些错误提示",
       "level": "stable",
