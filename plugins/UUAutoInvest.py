@@ -17,8 +17,8 @@ from utils.uu_helper import get_valid_token_for_uu
 
 class UUAutoInvest:
     """
-    悠悠有品自动投资插件 (防风控改良版)
-    策略：根据年化收益率自动购买高收益饰品，慢速执行，防止触发系统繁忙
+    悠悠有品自动投资插件 (狙击防封版)
+    策略：随机乱序、遇阻即停、慢速稳健
     """
 
     def __init__(self, steam_client, steam_client_mutex, config):
@@ -495,8 +495,8 @@ class UUAutoInvest:
             return None
 
     def execute_investment(self):
-        """执行自动投资任务"""
-        self.logger.info("开始执行自动投资任务...")
+        """执行自动投资任务（狙击模式）"""
+        self.logger.info(">>> 开始自动投资 (狙击模式) <<<")
 
         # 1. 刷新余额并检查最低余额要求
         try:
@@ -542,24 +542,37 @@ class UUAutoInvest:
             self.logger.warning("未找到符合条件的候选饰品")
             return
         
-        self.logger.info(f">>> 获取到 {len(candidates)} 个候选饰品，准备开始慢速扫描（防风控模式）<<<")
+        # === 核心改动1：打乱顺序（避免每次都从第1个开始）===
+        # 避免每次都从第1个开始请求，防止死磕同一个坏数据
+        random.shuffle(candidates)
+        self.logger.info(f">>> 获取到 {len(candidates)} 个候选饰品，已随机打乱顺序（狙击模式）<<<")
 
-        # 3. 遍历并执行购买策略（慢速版）
+        # 3. 遍历并执行购买策略（狙击模式）
         invest_config = self.config.get("uu_auto_invest", {})
         max_orders = invest_config.get("max_orders_per_run", 5)  # 每次最多挂几个求购单
         buy_price_ratio = invest_config.get("buy_price_ratio", 0.90)  # 求购价 = 市场价 * 0.90
         
-        # 新增：随机延迟配置（模拟人类行为）
-        min_interval = invest_config.get("interval_min", 10)  # 最小等待秒数（建议 >= 8）
-        max_interval = invest_config.get("interval_max", 20)  # 最大等待秒数
+        # 拉长间隔到 20-40 秒（更保守，避免风控）
+        min_interval = invest_config.get("interval_min", 20)  # 最小等待秒数（默认20秒）
+        max_interval = invest_config.get("interval_max", 40)  # 最大等待秒数（默认40秒）
         
         success_count = 0
+        busy_counter = 0  # 连续繁忙计数器（核心改动2：一击脱离）
+        max_busy_count = 2  # 连续2次遇到系统繁忙就停止任务
         
         for index, item in enumerate(candidates):
             # 检查今日购买上限
             if success_count >= max_orders:
                 self.logger.info(f"已达到本次运行最大挂单数 ({max_orders})，停止任务")
                 break
+
+            # === 核心改动2：连续风控自动停止（一击脱离）===
+            # 如果连续2次遇到系统繁忙，直接放弃本次任务
+            if busy_counter >= max_busy_count:
+                self.logger.error("!!! 连续触发风控，强制停止本次任务，建议休息几小时后再来 !!!")
+                self.logger.error("当前IP/账号可能已被标记，继续请求只会延长封禁时间")
+                break
+            # ========================
 
             template_id = item["templateId"]
             item_name = item["name"]
@@ -568,19 +581,21 @@ class UUAutoInvest:
                 # === 核心改良：随机延迟（模拟人类行为）===
                 # 不要固定睡眠，随机睡眠可以让行为更像人类
                 sleep_time = random.uniform(min_interval, max_interval)
-                self.logger.info(f"[{index+1}/{len(candidates)}] 冷却中... 等待 {sleep_time:.1f} 秒")
+                self.logger.info(f"[{index+1}/{len(candidates)}] 正在瞄准... 等待 {sleep_time:.1f} 秒")
                 time.sleep(sleep_time)
                 # ========================
                 
                 # 获取悠悠有品的实时详情
                 detail, is_system_busy = self.get_item_details_from_uu(template_id)
                 
-                # === 核心改良：繁忙熔断机制 ===
+                # === 核心改动2：一击脱离（遇到系统繁忙，小憩后继续，但计数）===
                 if is_system_busy:
-                    self.logger.warning("!!! 检测到系统繁忙，触发熔断机制 !!!")
-                    self.logger.warning("脚本将暂停运行 120 秒，请勿手动操作...")
-                    time.sleep(120)  # 罚站 2 分钟，给服务器风控系统重置IP权重的时间
+                    busy_counter += 1
+                    self.logger.warning(f"系统繁忙 ({busy_counter}/{max_busy_count})，暂停 60 秒...")
+                    time.sleep(60)  # 小憩一下，不连续请求
                     continue  # 跳过当前这个，继续下一个
+                else:
+                    busy_counter = 0  # 成功或者其他错误，重置繁忙计数
                 # ========================
                 
                 if not detail:
@@ -630,9 +645,13 @@ class UUAutoInvest:
                         self.logger.info("[测试模式] 挂单请求已模拟发送")
                         success_count += 1
                         current_balance -= target_price  # 模拟扣减
+                        # 挂单成功后，休息更久一点，模拟人类喜悦
+                        self.logger.info("买到了，休息 60 秒...")
+                        time.sleep(60)
                         continue
                     
                     # 实际挂单
+                    self.logger.info(f"发起挂单 -> {commodity_name} | 价格: {target_price:.2f}")
                     res = self.uuyoupin.publish_purchase_order(
                         templateId=int(template_id),
                         templateHashName=market_hash_name,
@@ -644,9 +663,12 @@ class UUAutoInvest:
                     res_data = res.json()
                     if res_data.get("Code") == 0:
                         order_no = res_data.get("Data", {}).get("orderNo", "未知")
-                        self.logger.info(f"✅ 挂单成功！{commodity_name}，求购价: {target_price:.2f}，订单号: {order_no}")
+                        self.logger.info(f"✅ 挂单成功！订单号: {order_no}")
                         current_balance -= target_price  # 扣减本地余额
                         success_count += 1
+                        # 挂单成功后，休息更久一点，模拟人类喜悦
+                        self.logger.info("买到了，休息 60 秒...")
+                        time.sleep(60)
                     else:
                         msg = res_data.get("Msg", "未知错误")
                         self.logger.warning(f"❌ 挂单失败: {msg}")
@@ -660,7 +682,11 @@ class UUAutoInvest:
                 self.logger.error(f"处理商品 {item_name} 时出错: {e}")
                 continue
 
-        self.logger.info(f"本次任务结束，共成功挂单 {success_count} 个")
+        if busy_counter >= max_busy_count:
+            self.logger.warning(f"本次任务因连续风控提前结束，成功挂单 {success_count} 个")
+            self.logger.warning("建议：等待 30 分钟以上再重新运行脚本，让服务器重置IP权重")
+        else:
+            self.logger.info(f"本次任务结束，共成功挂单 {success_count} 个")
 
     def exec(self):
         """主执行函数"""

@@ -46,21 +46,29 @@ class UUAutoSellItem:
                 return sale_price
 
         sale_price_rsp = self.uuyoupin.get_market_sale_list_with_abrade(item_id).json()
-        if sale_price_rsp["Code"] == 0:
-            rsp_list = sale_price_rsp["Data"]
+        
+        # 兼容大小写：Code 或 code
+        code = sale_price_rsp.get("Code")
+        if code is None:
+            code = sale_price_rsp.get("code", -1)
+        
+        if code == 0:
+            # 兼容大小写：Data 或 data
+            rsp_list = sale_price_rsp.get("Data") or sale_price_rsp.get("data", [])
             rsp_cnt = len(rsp_list)
             if rsp_cnt == 0:
                 sale_price = 0
                 commodity_name = ""
                 self.logger.warning(f"市场上没有指定筛选条件的物品")
                 return sale_price
-            commodity_name = rsp_list[0]["commodityName"]
+            commodity_name = rsp_list[0].get("commodityName") or rsp_list[0].get("CommodityName", "")
 
             sale_price_list = []
             cnt = min(cnt, rsp_cnt)
             for i in range(cnt):
-                if rsp_list[i]["price"] and i < cnt:
-                    sale_price_list.append(float(rsp_list[i]["price"]))
+                price = rsp_list[i].get("price") or rsp_list[i].get("Price")
+                if price and i < cnt:
+                    sale_price_list.append(float(price))
 
             if len(sale_price_list) == 1:
                 sale_price = sale_price_list[0]
@@ -77,7 +85,8 @@ class UUAutoSellItem:
         else:
             sale_price = 0
             commodity_name = ""
-            self.logger.error(f"查询出售价格失败，返回结果：{sale_price_rsp['Code']}，全部内容：{sale_price_rsp}")
+            msg = sale_price_rsp.get("Msg") or sale_price_rsp.get("msg", "未知错误")
+            self.logger.error(f"查询出售价格失败，返回结果：{msg} (code: {code})，全部内容：{sale_price_rsp}")
 
         sale_price = round(sale_price, 2)
 
@@ -103,12 +112,18 @@ class UUAutoSellItem:
                 "/api/commodity/Inventory/SellInventoryWithLeaseV2",
                 data={"GameId": "730", "itemInfos": item_infos},  # Csgo
             ).json()
-            if rsp["Code"] == 0:
+            # 兼容大小写：Code 或 code
+            code = rsp.get("Code")
+            if code is None:
+                code = rsp.get("code", -1)
+            
+            if code == 0:
                 success_count = len(item_infos)
                 self.logger.info(f"成功上架 {success_count} 个物品")
                 return success_count
             else:
-                self.logger.error(f"上架失败，返回结果：{rsp['Code']}，全部内容：{rsp}")
+                msg = rsp.get("Msg") or rsp.get("msg", "未知错误")
+                self.logger.error(f"上架失败，返回结果：{msg} (code: {code})，全部内容：{rsp}")
                 return -1
         except Exception as e:
             self.logger.error(f"调用 SellInventoryWithLeaseV2 上架失败: {e}", exc_info=True)
@@ -129,7 +144,12 @@ class UUAutoSellItem:
                     "Commoditys": item_infos,
                 },
             ).json()
-            if rsp["Code"] == 0:
+            # 兼容大小写：Code 或 code
+            code = rsp.get("Code")
+            if code is None:
+                code = rsp.get("code", -1)
+            
+            if code == 0:
                 success_count = 0
                 fail_count = 0
                 data_section = rsp.get("Data", {})
@@ -155,7 +175,9 @@ class UUAutoSellItem:
                 self.logger.info(f"尝试修改 {num} 个物品价格，成功 {success_count} 个，失败 {fail_count} 个")
                 return success_count
             else:
-                self.logger.error(f"修改出售价格失败，返回结果：{rsp['Code']}，全部内容：{rsp}")
+                msg = rsp.get("Msg") or rsp.get("msg", "未知错误")
+                code = rsp.get("Code") or rsp.get("code", -1)
+                self.logger.error(f"修改出售价格失败，返回结果：{msg} (code: {code})，全部内容：{rsp}")
                 return -1
         except Exception as e:
             self.logger.error(f"调用 PriceChangeWithLeaseV2 修改价格失败: {e}", exc_info=True)
@@ -207,6 +229,11 @@ class UUAutoSellItem:
                     
                     # 如果开启了策略：当前市场价还达不到止盈标准，则不挂单出售
                     if self.config["uu_auto_sell_item"].get("only_sell_if_profitable", False):
+                        # 如果没有成本价，跳过出售（避免亏本）
+                        if buy_price <= 0:
+                            self.logger.info(f"物品 {short_name} 没有成本价（购入价），跳过出售以避免亏本。")
+                            continue
+                        
                         # 计算止盈线
                         profit_ratio = self.config["uu_auto_sell_item"].get("take_profile_ratio", 0.1)
                         target_price = buy_price * (1 + profit_ratio)
@@ -355,10 +382,22 @@ class UUAutoSellItem:
             exit_code.set(1)
             return 1
         self.logger.info(f"以下物品会出售：{self.config['uu_auto_sell_item']['name']}")
-        self.auto_sell()
+        
+        # 启动时立即执行一次（可通过配置控制）
+        run_on_start = self.config["uu_auto_sell_item"].get("run_on_start", True)
+        if run_on_start:
+            self.logger.info("启动时立即执行出售自动上架...")
+            self.auto_sell()
+        else:
+            self.logger.info("已禁用启动时自动执行，等待定时任务...")
 
         run_time = self.config["uu_auto_sell_item"]["run_time"]
         interval = self.config["uu_auto_sell_item"]["interval"]
+        
+        # 修复时间格式：将点号替换为冒号（schedule库要求 HH:MM 格式）
+        if "." in run_time:
+            run_time = run_time.replace(".", ":")
+            self.logger.warning(f"时间格式已自动修正：{run_time}（请使用 HH:MM 格式，例如 15:30）")
 
         self.logger.info(f"[自动出售] 等待到 {run_time} 开始执行")
         self.logger.info(f"[自动修改价格] 每隔 {interval} 分钟执行一次")
