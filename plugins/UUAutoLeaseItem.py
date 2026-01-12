@@ -129,6 +129,22 @@ class UUAutoLeaseItem:
                     template_id = item["TemplateInfo"]["Id"]
                     short_name = item["ShotName"]
                     price = item["TemplateInfo"]["MarkPrice"]
+                    
+                    # --- 新增逻辑：提取购入价并对比 ---
+                    # 提取购入价（同出售插件逻辑）
+                    buy_price_str = item.get("AssetBuyPrice", "0").replace("购￥", "")
+                    try:
+                        buy_price = float(buy_price_str)
+                    except:
+                        buy_price = 0
+                    
+                    # 如果开启了策略：市场价 >= 购入价时，不执行租赁，跳过让出售插件处理
+                    if self.config["uu_auto_lease_item"].get("only_lease_below_cost", False):
+                        if buy_price > 0 and price >= buy_price:
+                            self.logger.info(f"物品 {short_name} 当前价({price}) >= 成本价({buy_price})，跳过租赁逻辑，等待出售。")
+                            continue
+                    # ----------------------------
+                    
                     if (
                         price < self.config["uu_auto_lease_item"]["filter_price"]
                         or item["Tradable"] is False

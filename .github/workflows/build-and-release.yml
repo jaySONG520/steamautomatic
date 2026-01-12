@@ -54,6 +54,8 @@ jobs:
   Publish:
     needs: Build
     runs-on: ubuntu-latest
+    # 禁用此步骤，因为个人仓库不需要发布到教程仓库
+    if: false
     steps:
       - name: Repository Dispatch
         uses: peter-evans/repository-dispatch@main

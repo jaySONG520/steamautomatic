@@ -202,6 +202,20 @@ class UUAutoSellItem:
                         logger.error(f"获取 {short_name} 的市场价格失败: {e}，暂时跳过")
                         continue
 
+                    # --- 新增逻辑：获取当前市场参考价判断是否值得卖 ---
+                    market_price = item["TemplateInfo"]["MarkPrice"]
+                    
+                    # 如果开启了策略：当前市场价还达不到止盈标准，则不挂单出售
+                    if self.config["uu_auto_sell_item"].get("only_sell_if_profitable", False):
+                        # 计算止盈线
+                        profit_ratio = self.config["uu_auto_sell_item"].get("take_profile_ratio", 0.1)
+                        target_price = buy_price * (1 + profit_ratio)
+                        
+                        if market_price < target_price:
+                            self.logger.info(f"物品 {short_name} 当前价({market_price}) 未达止盈线({target_price:.2f})，跳过出售。")
+                            continue
+                    # --------------------------------------------
+
                     if self.config["uu_auto_sell_item"]["take_profile"]:
                         self.logger.info(f"按{self.config['uu_auto_sell_item']['take_profile_ratio']:.2f}止盈率设置价格")
                         if buy_price > 0:
