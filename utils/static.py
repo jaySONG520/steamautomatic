@@ -32,6 +32,7 @@ INTERNAL_PLUGINS = [
     "uu_auto_accept_offer",
     "uu_auto_lease_item",
     "uu_auto_sell_item",
+    "uu_auto_invest",
     "steam_auto_accept_offer",
     "ecosteam",
     "c5_auto_accept_offer",

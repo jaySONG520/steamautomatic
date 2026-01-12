@@ -74,12 +74,34 @@ class UUAccount:
         random.seed(token)
         self.deviceToken = deviceToken
         self.session.headers.update(generate_headers(deviceToken, deviceToken, token=token))
+        self.balance = 0.0  # 初始化余额
         try:
             info = self.call_api("GET", "/api/user/Account/getUserInfo").json()
             self.nickname = info["Data"]["NickName"]
             self.userId = info["Data"]["UserId"]
+            # 提取余额信息
+            self.balance = float(info["Data"].get("Balance", 0))
+            logger.info(f"当前账户余额: {self.balance}")
         except KeyError:
             raise Exception("悠悠有品账号登录失败，请检查token是否正确")
+
+    def refresh_balance(self):
+        """
+        刷新账户余额
+        :return: 余额（float）
+        """
+        try:
+            info = self.call_api("GET", "/api/user/Account/getUserInfo").json()
+            if info.get("Code") == 0:
+                self.balance = float(info["Data"].get("Balance", 0))
+                logger.debug(f"刷新余额成功: {self.balance}")
+                return self.balance
+            else:
+                logger.warning(f"获取余额失败: {info.get('Msg', '未知错误')}")
+                return self.balance
+        except Exception as e:
+            logger.error(f"刷新余额出错: {e}")
+            return self.balance
 
     @staticmethod
     def __random_str(length):
@@ -593,12 +615,27 @@ class UUAccount:
             data=data_to_send,
         ).json()
         inventory_list = []
-        if inventory_list_rsp["Code"] == 0:  # 我他妈真是服了你了悠悠，Code的C一会儿大写一会儿小写
-            inventory_list = inventory_list_rsp["Data"]["ItemsInfos"]
+        # 兼容大小写：Code 或 code
+        # 注意：不能使用 or，因为 Code=0 时会被视为 False
+        code = inventory_list_rsp.get("Code")
+        if code is None:
+            code = inventory_list_rsp.get("code", -1)
+        
+        if code == 0:  # 我他妈真是服了你了悠悠，Code的C一会儿大写一会儿小写
+            data = inventory_list_rsp.get("Data")
+            if data is None:
+                data = inventory_list_rsp.get("data", {})
+            # 兼容不同的数据结构：可能是字典（包含ItemsInfos）或直接是列表
+            if isinstance(data, dict):
+                inventory_list = data.get("ItemsInfos") or data.get("itemsInfos", [])
+            elif isinstance(data, list):
+                inventory_list = data
             logger.info(f"库存数量 {len(inventory_list)}")
         else:
-            logger.error(inventory_list_rsp)
-            logger.error("获取悠悠库存失败!")
+            msg = inventory_list_rsp.get("Msg") or inventory_list_rsp.get("msg", "未知错误")
+            logger.error(f"获取悠悠库存失败: {msg} (code: {code})")
+            # 直接使用debug，如果日志级别不够会自动过滤
+            logger.debug(f"完整响应: {inventory_list_rsp}")
 
         return inventory_list
 
