@@ -336,11 +336,41 @@ class UUAccount:
                 "Sessionid": self.deviceToken,
             },
         ).json()
-        if rsp["Data"]["FailCount"] != 0:
-            for commodity in rsp["Data"]["Commoditys"]:
-                if commodity["IsSuccess"] != 1:
-                    logger.error(f"修改商品价格失败，商品ID：{commodity[id]}，原因：{commodity['Message']}")
-        return rsp["Data"]["SuccessCount"]
+        
+        # 兼容大小写：Code 或 code
+        code = rsp.get("Code")
+        if code is None:
+            code = rsp.get("code", -1)
+        
+        # 兼容大小写：Data 或 data
+        data = rsp.get("Data")
+        if data is None:
+            data = rsp.get("data")
+        
+        # 检查响应是否成功
+        if code != 0:
+            msg = rsp.get("Msg") or rsp.get("msg", "未知错误")
+            logger.error(f"修改租赁价格失败，返回结果：{msg} (code: {code})")
+            return 0
+        
+        # 检查 Data 是否存在
+        if data is None:
+            logger.error(f"修改租赁价格失败，响应中缺少 Data 字段，全部内容：{rsp}")
+            return 0
+        
+        # 检查 FailCount
+        fail_count = data.get("FailCount") or data.get("failCount", 0)
+        if fail_count != 0:
+            commodities = data.get("Commoditys") or data.get("commoditys", [])
+            for commodity in commodities:
+                is_success = commodity.get("IsSuccess") or commodity.get("isSuccess", 0)
+                if is_success != 1:
+                    comm_id = commodity.get("CommodityId") or commodity.get("commodityId", "未知ID")
+                    error_msg = commodity.get("Message") or commodity.get("message", "未知错误")
+                    logger.error(f"修改商品价格失败，商品ID：{comm_id}，原因：{error_msg}")
+        
+        success_count = data.get("SuccessCount") or data.get("successCount", 0)
+        return success_count
 
     def send_offer(self, orderNo):
         rsp = self.call_api(
