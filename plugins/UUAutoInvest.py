@@ -23,6 +23,88 @@ from utils.tools import exit_code
 from utils.uu_helper import get_valid_token_for_uu
 
 
+# ==========================================
+# 核心改造 1: 信号与执行器分离
+# ==========================================
+
+class SignalManager:
+    """信号管理器：负责信号的落地存储（留痕）"""
+    
+    def __init__(self, logger):
+        self.logger = logger
+        self.signal_dir = os.path.join(os.getcwd(), "data", "signals")
+        if not os.path.exists(self.signal_dir):
+            os.makedirs(self.signal_dir)
+    
+    def save_signal(self, signal: dict):
+        """将交易信号保存到文件，便于复盘"""
+        try:
+            today = datetime.now().strftime("%Y-%m-%d")
+            filename = os.path.join(self.signal_dir, f"{today}.json")
+            
+            # 追加写入模式（每行一个JSON，方便逐行读取）
+            with open(filename, "a", encoding="utf-8") as f:
+                f.write(json.dumps(signal, ensure_ascii=False) + "\n")
+            
+            self.logger.debug(f"信号已落地: {signal.get('name', '未知')}")
+        except Exception as e:
+            self.logger.error(f"保存信号失败: {e}")
+
+
+class UUOrderExecutor:
+    """执行器：只负责执行购买动作，不负责决策"""
+    
+    def __init__(self, uuyoupin_client, logger, config):
+        self.uuyoupin = uuyoupin_client
+        self.logger = logger
+        self.config = config
+    
+    def execute_buy(self, signal: dict) -> bool:
+        """
+        执行具体的下单 API 调用
+        :param signal: 经过校验的信号字典
+        :return: 是否下单成功
+        """
+        template_id = signal["templateId"]
+        market_hash_name = signal["marketHashName"]
+        item_name = signal["name"]
+        target_price = signal["target_price"]
+        
+        invest_config = self.config.get("uu_auto_invest", {})
+        test_mode = invest_config.get("test_mode", False)
+        
+        try:
+            # 测试模式
+            if test_mode:
+                self.logger.info(f"[测试模式] 模拟执行购买 -> {item_name} | 价格: {target_price:.2f}")
+                return True
+            
+            # 真实下单
+            self.logger.info(f"🚀 [执行器] 发起挂单 -> {item_name} | 价格: {target_price:.2f}")
+            res = self.uuyoupin.publish_purchase_order(
+                templateId=int(template_id),
+                templateHashName=market_hash_name,
+                commodityName=item_name,
+                purchasePrice=target_price,
+                purchaseNum=1
+            )
+            
+            # 解析结果
+            res_data = res.json()
+            if res_data.get("Code") == 0:
+                order_no = res_data.get("Data", {}).get("orderNo", "未知")
+                self.logger.info(f"✅ 挂单成功！订单号: {order_no}")
+                return True
+            else:
+                msg = res_data.get("Msg", "未知错误")
+                self.logger.warning(f"❌ 挂单失败: {msg}")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"执行器异常: {e}")
+            return False
+
+
 class UUAutoInvest:
     """
     悠悠有品自动投资插件 (狙击防封版)
@@ -35,6 +117,11 @@ class UUAutoInvest:
         self.steam_client = steam_client
         self.steam_client_mutex = steam_client_mutex
         self.uuyoupin = None
+        
+        # 内部组件（架构升级）
+        self.signal_manager = None
+        self.executor = None
+        
         # API session（用于保持 cookie）
         self._api_session = None
         # 求购价缓存：{templateId: {"max_price": float, "sell_price": float, "good_id": int, "update_time": timestamp}}
@@ -56,7 +143,12 @@ class UUAutoInvest:
 
         try:
             self.uuyoupin = uuyoupinapi.UUAccount(token)
-            self.logger.info("自动投资插件初始化成功")
+            
+            # 初始化子组件（架构升级）
+            self.signal_manager = SignalManager(self.logger)
+            self.executor = UUOrderExecutor(self.uuyoupin, self.logger, self.config)
+            
+            self.logger.info("自动投资插件初始化成功 (架构升级版)")
             return False
         except Exception as e:
             handle_caught_exception(e, "UUAutoInvest")
@@ -344,8 +436,8 @@ class UUAutoInvest:
         return optimal_price
 
     def execute_investment(self):
-        """执行自动投资任务（狙击模式）"""
-        self.logger.info(">>> 开始自动投资 (狙击模式) <<<")
+        """执行自动投资任务（重构版：信号驱动）"""
+        self.logger.info(">>> 开始自动投资 (架构升级版) <<<")
 
         # 1. 刷新余额并检查最低余额要求
         try:
@@ -462,65 +554,35 @@ class UUAutoInvest:
                     self.logger.warning(f"{item_name} 无法确定合适的求购价，跳过")
                     continue
                 
-                # 验证求购价必须低于市场价
-                if target_price >= lowest_price:
-                    self.logger.warning(f"{item_name} 计算出的求购价 {target_price:.2f} >= 市场最低价 {lowest_price:.2f}，跳过（不合理）")
-                    continue
-
-                # 再次校验价格区间
-                min_price = invest_config.get("min_price", 100)
-                max_price = invest_config.get("max_price", 2000)
-                if not (min_price <= target_price <= max_price):
-                    self.logger.debug(f"{item_name} 求购价 {target_price} 不在价格区间内，跳过")
-                    continue
-
-                # 4. 余额检查
-                if current_balance < target_price:
-                    self.logger.info(f"余额不足购买 {item_name} (需 {target_price:.2f}，当前余额 {current_balance:.2f})，跳过")
-                    continue
-
-                # 5. 执行挂单
-                test_mode = invest_config.get("test_mode", False)
+                # === 步骤 C: 生成信号 (Signal Generation) ===
+                # 构建信号对象
+                signal = {
+                    "templateId": template_id,
+                    "marketHashName": market_hash_name,
+                    "name": item_name,
+                    "market_price": lowest_price,
+                    "target_price": target_price,
+                    "roi": item.get("roi", 0),
+                    "tier": item.get("tier", "C"),  # 资产分级（如果有）
+                    "timestamp": datetime.now().isoformat(),
+                    "source": "UUAutoInvest",
+                    "strategy_version": "v2_signal_separated"
+                }
                 
-                try:
-                    self.logger.info(f"正在挂单 -> {item_name} | 价格: {target_price:.2f}, 市场价: {lowest_price:.2f}, 年化: {item['roi']*100:.1f}%")
-                    
-                    # 如果是测试模式，不真挂单
-                    if test_mode:
-                        self.logger.info("[测试模式] 挂单请求已模拟发送")
-                        success_count += 1
-                        current_balance -= target_price  # 模拟扣减
-                        # 挂单成功后，休息更久一点，模拟人类喜悦
-                        self.logger.info("买到了，休息 60 秒...")
-                        time.sleep(60)
-                        continue
-                    
-                    # 实际挂单（使用白名单中的商品名称）
-                    self.logger.info(f"发起挂单 -> {item_name} | 价格: {target_price:.2f}")
-                    res = self.uuyoupin.publish_purchase_order(
-                        templateId=int(template_id),
-                        templateHashName=market_hash_name,
-                        commodityName=item_name,  # 使用白名单中的名称
-                        purchasePrice=target_price,
-                        purchaseNum=1
-                    )
-                    
-                    res_data = res.json()
-                    if res_data.get("Code") == 0:
-                        order_no = res_data.get("Data", {}).get("orderNo", "未知")
-                        self.logger.info(f"✅ 挂单成功！订单号: {order_no}")
-                        current_balance -= target_price  # 扣减本地余额
-                        success_count += 1
-                        # 挂单成功后，休息更久一点，模拟人类喜悦
-                        self.logger.info("买到了，休息 60 秒...")
-                        time.sleep(60)
-                    else:
-                        msg = res_data.get("Msg", "未知错误")
-                        self.logger.warning(f"❌ 挂单失败: {msg}")
-                        
-                except Exception as e:
-                    self.logger.error(f"挂单异常: {e}")
-                    handle_caught_exception(e, "UUAutoInvest")
+                # 信号落地（留痕）
+                self.signal_manager.save_signal(signal)
+                
+                # === 步骤 D: 二次校验 (Pre-Trade Check) ===
+                # 这一步是把关的最后一道防线
+                if not self.pre_trade_check(signal, current_balance):
+                    continue
+                
+                # === 步骤 E: 交给执行器 (Execution) ===
+                if self.executor.execute_buy(signal):
+                    success_count += 1
+                    current_balance -= target_price  # 更新本地余额缓存
+                    self.logger.info("买到了，贤者模式 60 秒...")
+                    time.sleep(60)
 
             except Exception as e:
                 handle_caught_exception(e, "UUAutoInvest")
