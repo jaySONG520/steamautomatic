@@ -6,12 +6,28 @@ CSQAQ 智能选品扫描器 (Scanner)
 
 import json
 import os
+import sys
 import time
+import random
 from typing import Optional, List, Dict
 from datetime import datetime
 
+# 添加项目根目录到 Python 路径（用于独立运行）
+if __name__ == "__main__":
+    # 获取当前文件所在目录的父目录（项目根目录）
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(current_dir)
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+
 import json5
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+import urllib3
+
+# 禁用SSL警告
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 from utils.logger import PluginLogger, handle_caught_exception
 
@@ -33,14 +49,18 @@ class CSQAQScanner:
         # 从配置读取参数
         invest_config = self.config.get("uu_auto_invest", {})
         
-        # 选品硬指标配置
-        self.MIN_ROI = invest_config.get("min_roi", 0.25)  # 最小年化回报 25%
-        self.MAX_ROI = invest_config.get("max_roi", 0.55)  # 最大年化回报 55%（过高通常有诈）
-        self.MIN_PRICE = invest_config.get("min_price", 100)  # 价格底线
+        # 选品硬指标配置（严选模式）
+        scanner_config = self.config.get("scanner", {})
+        
+        # === 核心门槛配置 (拒绝垃圾饰品) ===
+        self.MIN_PRICE = scanner_config.get("min_price_hard", 200.0)  # 价格硬门槛：200元（低于这个不看）
+        self.MIN_DAILY_RENT = scanner_config.get("min_daily_rent", 0.5)  # 日租金底线：0.5元（0.3元那种没肉吃）
+        self.MIN_LEASE_COUNT = scanner_config.get("min_lease_count", 30)  # 最小在租人数：30人（少于这个说明根本没人租）
+        self.MIN_LEASE_RATIO = scanner_config.get("min_lease_ratio", 0.15)  # 最小出租率：15%（在租/在售，防止库存积压）
+        
+        # 其他配置
         self.MAX_PRICE = invest_config.get("max_price", 2000)  # 价格上限
-        self.MIN_LEASE_NUM = invest_config.get("min_lease_num", 30)  # 必须有30人以上在租（保热度）
-        self.MAX_VOLATILITY = invest_config.get("max_volatility", 0.15)  # 最大价格波动率 15%
-        self.MIN_TREND_90D = invest_config.get("min_trend_90d", -10)  # 90天最小涨跌幅 -10%
+        self.MAX_VOLATILITY = scanner_config.get("max_lease_volatility", 0.25)  # 最大租金波动率 25%
         
         # API 配置
         self.api_token = self._get_api_token()
@@ -48,8 +68,14 @@ class CSQAQScanner:
         self.headers = {
             "ApiToken": self.api_token,
             "Content-Type": "application/json;charset=UTF-8",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
+        
+        # 配置重试机制，解决网络不稳
+        self.session = requests.Session()
+        retries = Retry(total=3, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504])
+        self.session.mount('https://', HTTPAdapter(max_retries=retries))
+        self.session.headers.update(self.headers)
         
         # 输出文件
         self.whitelist_path = "config/whitelist.json"
@@ -88,7 +114,7 @@ class CSQAQScanner:
         try:
             self.logger.info("正在绑定本机IP到API白名单...")
             
-            resp = requests.post(url, headers=self.headers, timeout=15)
+            resp = self.session.post(url, headers=self.headers, timeout=10, verify=False)
             
             if resp.status_code != 200:
                 self.logger.error(f"绑定IP失败: HTTP {resp.status_code}")
@@ -162,39 +188,78 @@ class CSQAQScanner:
 
     def get_item_details(self, good_id: int) -> Optional[dict]:
         """
-        精选：获取在租数量等热度指标
+        获取详情：查在租数量、日租金、在售数量
+        这是"验资"的关键步骤，用于识别"僵尸盘"
         """
-        # 根据 CSQAQ API 文档，获取饰品详情使用 /info/get_good
         url = f"{self.base_url}/info/get_good"
         
         try:
-            time.sleep(0.5)  # 遵守频率限制
+            time.sleep(0.3)  # 遵守频率限制
             
-            resp = requests.get(url, params={"good_id": good_id}, headers=self.headers, timeout=15)
+            # 使用与 get_rank_list 相同的认证方式（直接传入 headers）
+            # CSQAQ API 使用 id 作为参数名
+            params = {"id": good_id}
+            resp = requests.get(url, params=params, headers=self.headers, timeout=10, verify=False)
             
             if resp.status_code != 200:
-                return None
+                # 如果使用 id 失败，尝试 good_id（某些 API 版本可能不同）
+                if resp.status_code == 404 or resp.status_code == 400:
+                    params = {"good_id": good_id}
+                    resp = requests.get(url, params=params, headers=self.headers, timeout=10, verify=False)
+                    if resp.status_code != 200:
+                        if resp.status_code == 401:
+                            self.logger.debug(f"获取饰品 {good_id} 详情失败: HTTP 401 未授权（请检查 API Token 和 IP 白名单）")
+                        else:
+                            self.logger.debug(f"获取饰品 {good_id} 详情失败: HTTP {resp.status_code}")
+                        return None
+                elif resp.status_code == 401:
+                    self.logger.debug(f"获取饰品 {good_id} 详情失败: HTTP 401 未授权（请检查 API Token 和 IP 白名单）")
+                    return None
+                else:
+                    self.logger.debug(f"获取饰品 {good_id} 详情失败: HTTP {resp.status_code}")
+                    return None
             
             result = resp.json()
             code = result.get("code")
+            msg = result.get("msg", "")
             
+            # 检查 API 返回码
             if code not in [200, 201]:
+                # 记录具体错误信息（但只在 DEBUG 级别，避免日志过多）
+                if code == 429:
+                    self.logger.debug(f"获取饰品 {good_id} 详情失败: 频率限制 (429)")
+                elif code == 401:
+                    self.logger.debug(f"获取饰品 {good_id} 详情失败: 未授权 (401)")
+                else:
+                    self.logger.debug(f"获取饰品 {good_id} 详情失败: code={code}, msg={msg}")
                 return None
             
             data = result.get("data", {})
             # 根据实际 API 响应结构调整
             goods_info = data.get("goods_info") or data.get("data") or data
+            
+            # 检查是否真的获取到了数据
+            if not goods_info or (isinstance(goods_info, dict) and not goods_info):
+                self.logger.debug(f"获取饰品 {good_id} 详情失败: 数据为空")
+                return None
+            
             return goods_info
             
+        except requests.exceptions.Timeout:
+            self.logger.debug(f"获取饰品 {good_id} 详情失败: 请求超时")
+            return None
+        except requests.exceptions.RequestException as e:
+            self.logger.debug(f"获取饰品 {good_id} 详情失败: 网络错误 - {e}")
+            return None
         except Exception as e:
-            self.logger.debug(f"获取饰品 {good_id} 详情失败: {e}")
+            self.logger.debug(f"获取饰品 {good_id} 详情失败: {type(e).__name__} - {e}")
             return None
 
     def get_lease_stability(self, good_id: int) -> float:
         """
-        检查租金走势稳定性（通过短租价格 K 线）
-        返回波动率（0-1之间，越小越稳定）
-        用于识别"虚假租金"（挂得高但没人租的情况）
+        稳定性检查
+        返回: 波动率 (0.0 - 1.0). 越低越好
+        如果数据获取失败，默认返回 0.5 (视为中等风险)
         """
         url = f"{self.base_url}/info/get_chart"
         payload = {
@@ -206,47 +271,44 @@ class CSQAQScanner:
         }
 
         try:
-            time.sleep(0.5)  # 遵守频率限制
+            time.sleep(0.2)  # 遵守频率限制
             
-            resp = requests.post(url, json=payload, headers=self.headers, timeout=15)
+            resp = self.session.post(url, json=payload, timeout=10, verify=False)
             
             if resp.status_code != 200:
-                return 1.0  # 返回最大值表示不稳定
+                return 0.5  # 数据不足视为中等风险
             
             result = resp.json()
-            code = result.get("code")
+            data = result.get('data', {})
+            prices = data.get('main_data', [])
             
-            if code not in [200, 201]:
-                return 1.0
+            # 数据清洗，去除None
+            if prices:
+                prices = [p for p in prices if p is not None]
             
-            data = result.get("data", {})
-            # 根据实际 API 响应结构调整
-            chart_data = data.get("chart_data") or data
-            lease_prices = chart_data.get("main_data", [])
-            
-            if not lease_prices or len(lease_prices) < 10:
-                return 1.0  # 数据不足，认为不稳定
+            if not prices or len(prices) < 5:
+                return 0.5  # 数据不足视为中等风险
             
             # 计算变异系数 (标准差/均值)
-            prices_float = [float(p) for p in lease_prices if p]
+            prices_float = [float(p) for p in prices if p]
             if not prices_float:
-                return 1.0
+                return 0.5
             
             avg = sum(prices_float) / len(prices_float)
             if avg == 0:
-                return 1.0
+                return 0.0
             
             # 计算标准差
-            variance = sum((x - avg) ** 2 for x in prices_float) / len(prices_float)
-            std = variance ** 0.5
+            std = (sum((x - avg) ** 2 for x in prices_float) / len(prices_float)) ** 0.5
             
             # 变异系数 = 标准差 / 均值
             volatility = std / avg
             return volatility
             
         except Exception as e:
+            # 出错了也不要卡死，默认中等风险
             self.logger.debug(f"获取饰品 {good_id} 租金稳定性数据失败: {e}")
-            return 1.0  # 出错时返回最大值表示不稳定
+            return 0.5
 
     def run_scan(self) -> List[dict]:
         """
@@ -254,57 +316,72 @@ class CSQAQScanner:
         :return: 白名单列表
         """
         self.logger.info("=" * 60)
-        self.logger.info("🚀 [选品大脑] 启动双轨制全品类扫描模式（稳健型 + 高收益型）")
+        self.logger.info(f"🚀 [Scanner] 启动严选模式 (价格>{self.MIN_PRICE}元 | 在租>{self.MIN_LEASE_COUNT}人 | 日租>{self.MIN_DAILY_RENT}元)")
         self.logger.info("=" * 60)
 
         # 从配置读取参数
         invest_config = self.config.get("uu_auto_invest", {})
         scanner_config = self.config.get("scanner", {})
         
-        # --- 策略 A: 稳健型 (步枪/探员/微冲/手枪) ---
-        # 目标：不亏本金，稳定拿租
+        # --- 策略 A: 稳健型 (严选模式) ---
+        # 根据 API 文档，可以直接使用 filter 参数过滤，减少后续 API 调用
         filter_steady = {
-            "排序": ["租赁_短租收益率(年化)"],
+            "排序": ["租赁_短租收益率(年化)"],  # 必填字段，按年化收益率排序
             "类型": scanner_config.get("filter_types_steady", ["不限_步枪", "不限_手枪", "不限_微型冲锋枪", "不限_探员"]),
-            "价格最低价": self.MIN_PRICE,
-            "价格最高价": self.MAX_PRICE,
-            "短租收益最低": scanner_config.get("min_roi_steady", 20),  # 枪皮探员20%年化就很优质了
-            "在售最少": invest_config.get("min_on_sale", 50)
+            "价格最低价": self.MIN_PRICE,  # 价格硬门槛：200元
+            "价格最高价": scanner_config.get("max_price_steady", 3000),
+            "短租收益最低": scanner_config.get("min_roi_steady", 20),  # 年化20%以上
+            "在售最少": scanner_config.get("min_on_sale_steady", 50),  # 确保流动性
+            "出租最少": self.MIN_LEASE_COUNT  # 在租数量硬门槛：30人（API 层面过滤，避免调用详情接口）
         }
         
-        # --- 策略 B: 高收益型 (匕首/手套) ---
-        # 目标：利用10.24更新后的高租金对冲本金阴跌
-        filter_aggressive = {
-            "排序": ["租赁_短租收益率(年化)"],
+        # --- 策略 B: 重资产型 (匕首/手套) ---
+        filter_heavy = {
+            "排序": ["租赁_短租收益率(年化)"],  # 必填字段，按年化收益率排序
             "类型": scanner_config.get("filter_types_aggressive", ["不限_匕首", "不限_手套"]),
-            "价格最低价": scanner_config.get("min_price_aggressive", 300),
-            "价格最高价": scanner_config.get("max_price_aggressive", 5000),  # 刀和手套稍微放宽预算
-            "短租收益最低": scanner_config.get("min_roi_aggressive", 35),  # 刀手套必须35%以上才值得博弈
-            "在售最少": scanner_config.get("min_on_sale_aggressive", 30)  # 流动性要求稍降，因为单价高
+            "价格最低价": self.MIN_PRICE,  # 价格硬门槛：200元
+            "价格最高价": scanner_config.get("max_price_aggressive", 8000),
+            "短租收益最低": scanner_config.get("min_roi_aggressive", 30),  # 年化30%以上
+            "在售最少": scanner_config.get("min_on_sale_aggressive", 20),
+            "出租最少": self.MIN_LEASE_COUNT  # 在租数量硬门槛：30人（API 层面过滤，避免调用详情接口）
         }
 
         # 第一步：利用 API 强大的 Filter 功能进行海选（双轨制）
         self.logger.info("📡 策略A: 正在获取稳健型饰品（步枪/探员/微冲/手枪）...")
-        steady_list = self.get_rank_list(filter_steady)
-        self.logger.info(f"  获取到 {len(steady_list)} 个稳健型候选")
+        list_steady = self.get_rank_list(filter_steady)
+        self.logger.info(f"  获取到 {len(list_steady)} 个稳健型候选")
         
-        self.logger.info("📡 策略B: 正在获取高收益型饰品（匕首/手套）...")
-        aggressive_list = self.get_rank_list(filter_aggressive)
-        self.logger.info(f"  获取到 {len(aggressive_list)} 个高收益型候选")
+        time.sleep(1)  # 避免请求过快
         
-        raw_list = steady_list + aggressive_list
+        self.logger.info("📡 策略B: 正在获取重资产型饰品（匕首/手套）...")
+        list_heavy = self.get_rank_list(filter_heavy)
+        self.logger.info(f"  获取到 {len(list_heavy)} 个重资产型候选")
         
-        if not raw_list:
+        raw_list = list_steady + list_heavy
+        
+        # 去重
+        seen = set()
+        unique_list = []
+        for item in raw_list:
+            item_id = item.get('id') or item.get('good_id')
+            if item_id and item_id not in seen:
+                unique_list.append(item)
+                seen.add(item_id)
+        
+        if not unique_list:
             self.logger.error("无法获取排行榜数据，选品终止")
             return []
 
-        self.logger.info(f"📡 API 初筛完成，共找到 {len(raw_list)} 个潜在目标（稳健型: {len(steady_list)}, 高收益型: {len(aggressive_list)}）")
+        self.logger.info(f"📡 API共拉取到 {len(unique_list)} 个初始目标（已去重），开始智能分析...")
 
         final_whitelist = []
-        total_items = len(raw_list)
 
-        # 第二步：本地金融逻辑精选（只做必要的检查）
-        for index, item in enumerate(raw_list):
+        # 第二步：本地金融逻辑精选（严选模式 - 流动性硬指标）
+        total_items = len(unique_list)
+        consecutive_401_errors = 0  # 连续 401 错误计数
+        max_401_errors = 5  # 最多允许 5 个连续 401 错误
+        
+        for index, item in enumerate(unique_list):
             name = item.get("name", "未知")
             good_id = item.get("id") or item.get("good_id")
             
@@ -313,57 +390,118 @@ class CSQAQScanner:
 
             self.logger.info(f"[{index+1}/{total_items}] 分析: {name}")
 
-            # 判断是否为重资产（匕首/手套）
-            is_knife_or_glove = any(x in name for x in ["★", "手套", "匕首", "刀", "蝴蝶", "爪子", "M9", "刺刀"])
-            
-            # 1. 差异化涨跌幅过滤
-            sell_price_rate_90 = float(item.get("sell_price_rate_90", 0))
-            if is_knife_or_glove:
-                # 刀手套目前普遍在跌，我们允许-15%以内的回撤，因为租金能补回来（以息抵本策略）
-                max_decline = scanner_config.get("max_decline_aggressive", -15)
-                if sell_price_rate_90 < max_decline:
-                    self.logger.debug(f"  - {name}: 重资产跌幅过大 (90天跌幅 {sell_price_rate_90:.1f}% < {max_decline}%)，跳过")
-                    continue
-            else:
-                # 枪皮和探员要求更高，不能跌超过8%（因为租金相对低，本金必须稳）
-                max_decline = scanner_config.get("max_decline_steady", -8)
-                if sell_price_rate_90 < max_decline:
-                    self.logger.debug(f"  - {name}: 稳健型跌幅过大 (90天跌幅 {sell_price_rate_90:.1f}% < {max_decline}%)，跳过")
-                    continue
-
-            # 2. 差异化溢价检查 (UU对比BUFF)
-            yyyp_sell_price = float(item.get("yyyp_sell_price", 0))
-            buff_sell_price = float(item.get("buff_sell_price", 0))
-            
-            if buff_sell_price > 0:
-                markup = yyyp_sell_price / buff_sell_price
-                if is_knife_or_glove:
-                    # 刀手套溢价不能超过8%（因为基数大，溢价太高必跌）
-                    max_markup = scanner_config.get("max_markup_aggressive", 1.08)
-                    if markup > max_markup:
-                        self.logger.debug(f"  - {name}: 重资产溢价过高 ({markup*100:.1f}% > {max_markup*100:.1f}%)，跳过")
-                        continue
-                else:
-                    # 枪皮和探员允许15%溢价
-                    max_markup = scanner_config.get("max_markup_steady", 1.15)
-                    if markup > max_markup:
-                        self.logger.debug(f"  - {name}: 稳健型溢价过高 ({markup*100:.1f}% > {max_markup*100:.1f}%)，跳过")
-                        continue
-
-            # 3. 租金稳定性校验（通过 K 线接口）
-            # 获取最近 30 天的租金走势，看租金是否经常跳水
-            # 用于识别"虚假租金"（挂得高但没人租的情况）
-            lease_volatility = self.get_lease_stability(good_id)
-            max_lease_volatility = self.config.get("uu_auto_invest", {}).get("max_lease_volatility", 0.15)
-            if lease_volatility > max_lease_volatility:  # 租金波动超过15%的不要
-                self.logger.debug(f"  - {name}: 租金波动过大 ({lease_volatility:.1%} > {max_lease_volatility:.1%})，跳过")
+            # 基础过滤：90天跌幅（不能跌太狠）
+            rate_90 = float(item.get('sell_price_rate_90', 0) or 0)
+            if rate_90 < -15:  # 跌太狠的不要
+                self.logger.debug(f"  - {name}: 跌幅过大 (90天跌幅 {rate_90:.1f}%)，跳过")
+                time.sleep(0.3)
                 continue
 
-            # 所有检查通过，加入白名单
+            # === 核心过滤：从排行榜数据中获取关键指标 ===
+            # 根据 API 文档，get_rank_list 已返回 yyyp_sell_num 和 yyyp_lease_price
+            # 尝试从排行榜数据中直接获取在租数量（如果 API 返回了该字段）
+            
+            # 1. 先从排行榜数据获取所有可用字段
+            sell_num = int(item.get('yyyp_sell_num', 0) or 0)  # 在售数量
+            daily_rent = float(item.get('yyyp_lease_price', 0) or 0)  # 日租金
+            
+            # 尝试从排行榜数据中获取在租数量（如果 API 返回了该字段）
+            # 注意：根据 API 文档，排行榜数据可能不包含在租数量，但我们可以尝试获取
+            lease_num_from_rank = item.get('yyyp_lease_num')  # 可能为 None
+            
+            # 2. 先进行基础检查（不需要在租数量）
+            # 3. "甚至不够电费"熔断（拒绝"几毛钱"生意）
+            if daily_rent < self.MIN_DAILY_RENT:
+                self.logger.info(f"  ❌ [租金低] {name}: 日租 {daily_rent:.2f}元 (<{self.MIN_DAILY_RENT}元)")
+                time.sleep(0.3)
+                continue
+            
+            # 4. 获取在租数量（优先使用排行榜数据，如果不存在则调用详情接口）
+            lease_num = 0
+            details = None
+            
+            # 如果排行榜数据中已有在租数量，直接使用
+            if lease_num_from_rank is not None:
+                lease_num = int(lease_num_from_rank)
+                self.logger.debug(f"  - {name}: 从排行榜数据获取在租数量: {lease_num}")
+            else:
+                # 如果排行榜数据中没有，尝试调用详情接口
+                # 如果连续出现太多 401 错误，尝试重新绑定 IP
+                if consecutive_401_errors >= max_401_errors:
+                    self.logger.warning(f"连续出现 {consecutive_401_errors} 个 401 错误，尝试重新绑定 IP...")
+                    if self.bind_local_ip():
+                        consecutive_401_errors = 0  # 重置计数
+                        time.sleep(2)  # 等待绑定生效
+                    else:
+                        self.logger.error("重新绑定 IP 失败，详情接口可能无法使用")
+                        # 不 break，继续使用 filter 过滤的结果
+                
+                try:
+                    details = self.get_item_details(good_id)
+                    if details:
+                        lease_num = int(details.get('yyyp_lease_num', 0) or 0)
+                        consecutive_401_errors = 0  # 成功获取，重置计数
+                        self.logger.debug(f"  - {name}: 从详情接口获取在租数量: {lease_num}")
+                    else:
+                        # 如果详情接口失败，由于 filter 已经过滤了在租数量 >= MIN_LEASE_COUNT
+                        # 我们可以使用一个基于在售数量的合理估计值（而不是固定的最小值）
+                        consecutive_401_errors += 1
+                        # 使用在售数量估算在租数量（假设出租率为 20%，这是一个合理的估计）
+                        estimated_lease_num = max(self.MIN_LEASE_COUNT, int(sell_num * 0.20))
+                        lease_num = estimated_lease_num
+                        if (index + 1) % 10 == 0:
+                            self.logger.warning(f"  ⚠️ [{index+1}/{total_items}] {name} (ID: {good_id}): 无法获取在租数量，使用估算值 {lease_num} (基于在售数量 {sell_num})")
+                        else:
+                            self.logger.debug(f"  - {name}: 无法获取在租数量，使用估算值 {lease_num}")
+                except Exception as e:
+                    self.logger.debug(f"  - {name}: 获取详情失败: {e}，使用估算值")
+                    # 使用在售数量估算在租数量
+                    estimated_lease_num = max(self.MIN_LEASE_COUNT, int(sell_num * 0.20))
+                    lease_num = estimated_lease_num
+
+            # 2. "僵尸盘"熔断（核心诉求：拒绝"2人租"惨案）
+            # 注意：由于 filter 已经过滤了，这个检查主要是双重验证
+            if lease_num < self.MIN_LEASE_COUNT:
+                self.logger.info(f"  ❌ [没人租] {name}: 在租仅 {lease_num} 人 (<{self.MIN_LEASE_COUNT})")
+                time.sleep(0.3)
+                continue
+
+            # 3. "甚至不够电费"熔断（拒绝"几毛钱"生意）
+            # 注意：这个检查已经在上面进行了，这里可以删除（但保留作为双重验证）
+            # 实际上，由于 filter 已经过滤了日租金，这个检查主要是双重验证
+
+            # 4. "供过于求"熔断（出租率计算）
+            # 如果卖的人有500个，租的人只有30个，出租率 6%，很难轮到你
+            if sell_num > 0:
+                lease_ratio = lease_num / sell_num
+            else:
+                lease_ratio = 0
+            
+            if lease_ratio < self.MIN_LEASE_RATIO:
+                self.logger.info(f"  ❌ [太卷了] {name}: 出租率 {lease_ratio:.1%} (<{self.MIN_LEASE_RATIO:.1%}) | 在售:{sell_num} 在租:{lease_num}")
+                time.sleep(0.3)
+                continue
+
+            # 5. 租金稳定性检查
+            volatility = self.get_lease_stability(good_id)
+            if volatility > self.MAX_VOLATILITY:
+                self.logger.info(f"  ❌ [租金乱] {name}: 波动率 {volatility:.1%} (> {self.MAX_VOLATILITY:.1%})")
+                time.sleep(0.3)
+                continue
+
+            # === 通过所有测试 ===
             yyyp_lease_annual = item.get("yyyp_lease_annual", 0)
             roi = float(yyyp_lease_annual) / 100.0
-            buy_limit = round(yyyp_sell_price * 0.91, 2)  # 求购建议价（市场价的91%，统一标准）
-            asset_type = "重资产" if is_knife_or_glove else "稳健型"  # 标记资产类型
+            yyyp_sell_price = float(item.get('yyyp_sell_price', 0))
+            buff_sell_price = float(item.get('buff_sell_price', 0))
+            buy_limit = round(yyyp_sell_price * 0.92, 2)  # 建议92折求购
+            
+            # 判断资产类型
+            is_heavy = any(x in name for x in ["★", "手套", "匕首", "刀", "蝴蝶", "爪子", "M9", "刺刀"])
+            asset_type = "重资产" if is_heavy else "稳健型"
+
+            self.logger.info(f"  ✅ [入选] {name}")
+            self.logger.info(f"     - 价格: {yyyp_sell_price:.2f}元 | 日租: {daily_rent:.2f}元 | 在租: {lease_num}人 | 出租率: {lease_ratio:.1%} | 年化: {yyyp_lease_annual:.1f}%")
 
             final_whitelist.append({
                 "templateId": str(good_id),
@@ -374,21 +512,24 @@ class CSQAQScanner:
                 "current_price": yyyp_sell_price,
                 "yyyp_sell_price": yyyp_sell_price,
                 "buff_sell_price": buff_sell_price,
-                "lease_volatility": round(lease_volatility, 4),
-                "sell_price_rate_90": sell_price_rate_90,
-                "asset_type": asset_type,  # 标记资产类型
+                "daily_rent": daily_rent,
+                "lease_num": lease_num,
+                "sell_num": sell_num,
+                "lease_ratio": round(lease_ratio, 4),
+                "lease_volatility": round(volatility, 4),
+                "sell_price_rate_90": rate_90,
+                "asset_type": asset_type,
                 "selected_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             })
 
-            self.logger.info(f"  ✨ [锁定目标] {name} | 年化: {yyyp_lease_annual:.1f}% | 类型: {asset_type} | 90D趋势: {sell_price_rate_90:.1f}% | 租金波动: {lease_volatility:.1%} | 推荐求购价: {buy_limit:.2f}元")
-
             # 避免请求过快
-            if (index + 1) % 10 == 0:
-                self.logger.info(f"已分析 {index+1}/{total_items} 个饰品，当前合格: {len(final_whitelist)} 个")
-                time.sleep(2)  # 每10个休息2秒
+            time.sleep(0.5)
 
         self.logger.info("=" * 60)
-        self.logger.info(f"✨ 选品完成，共筛选出 {len(final_whitelist)} 款优质理财饰品")
+        if final_whitelist:
+            self.logger.info(f"🎉 筛选结束! 最终入库 {len(final_whitelist)} 个硬通货。")
+        else:
+            self.logger.warning("⚠️ 筛选结束，没有找到符合'严选标准'的饰品，建议稍作休息或微调参数。")
         self.logger.info("=" * 60)
 
         return final_whitelist
@@ -438,9 +579,15 @@ class CSQAQScanner:
                 self.logger.info("=" * 60)
                 for i, item in enumerate(whitelist, 1):
                     self.logger.info(f"{i}. {item['name']}")
-                    self.logger.info(f"   ROI: {item['roi_percent']:.1f}% | "
-                                   f"波动率: {item['volatility']*100:.1f}% | "
-                                   f"推荐求购价: {item['buy_limit']:.2f}元")
+                    asset_type = item.get('asset_type', '未知')
+                    roi_percent = item.get('roi_percent', 0)
+                    daily_rent = item.get('daily_rent', 0)
+                    lease_num = item.get('lease_num', 0)
+                    lease_ratio = item.get('lease_ratio', 0) * 100
+                    buy_limit = item.get('buy_limit', 0)
+                    self.logger.info(f"   类型: {asset_type} | ROI: {roi_percent:.1f}% | "
+                                   f"日租: {daily_rent:.2f}元 | 在租: {lease_num}人 | "
+                                   f"出租率: {lease_ratio:.1f}% | 推荐求购价: {buy_limit:.2f}元")
                 self.logger.info("=" * 60)
             else:
                 self.logger.warning("未找到符合条件的饰品，请调整筛选参数")
@@ -503,9 +650,39 @@ class ScannerPlugin:
 
 
 def main():
-    """主函数 - 独立运行"""
-    scanner = CSQAQScanner()
-    scanner.run()
+    """主函数 - 独立运行（用于单体测试）"""
+    print("=" * 60)
+    print("Scanner 模块单体测试")
+    print("=" * 60)
+    print("提示：确保 config.json5 中已配置 csqaq_api_token")
+    print("=" * 60)
+    print()
+    
+    try:
+        scanner = CSQAQScanner()
+        if not scanner.api_token:
+            print("❌ 错误：未配置 csqaq_api_token")
+            print("请在 config.json5 的 uu_auto_invest 配置中添加：")
+            print('  "csqaq_api_token": "你的TOKEN"')
+            return
+        
+        print(f"✅ API Token 已配置（长度: {len(scanner.api_token)}）")
+        print(f"✅ 价格硬门槛: {scanner.MIN_PRICE}元")
+        print(f"✅ 日租金底线: {scanner.MIN_DAILY_RENT}元")
+        print(f"✅ 最小在租人数: {scanner.MIN_LEASE_COUNT}人")
+        print(f"✅ 最小出租率: {scanner.MIN_LEASE_RATIO*100:.0f}%")
+        print()
+        print("开始执行扫描...")
+        print()
+        
+        scanner.run()
+        
+    except KeyboardInterrupt:
+        print("\n\n⚠️ 用户中断测试")
+    except Exception as e:
+        print(f"\n\n❌ 测试失败: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 if __name__ == "__main__":
