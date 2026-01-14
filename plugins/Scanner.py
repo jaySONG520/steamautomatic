@@ -341,17 +341,22 @@ class CSQAQScanner:
         
         return all_items
 
-    def get_lease_num_from_chart(self, good_id: int) -> Optional[int]:
+    def get_lease_num_from_chart(self, good_id: int, period: int = 7) -> Optional[int]:
         """
         从chart接口获取在租数量（备用方法）
         当get_item_details失败时使用
+        
+        :param good_id: 饰品ID
+        :param period: 查询周期（7=近7天，30=近30天，90=近90天）
+                      注意：返回的是该周期内最新的在租数量（数组最后一个值）
+        :return: 在租数量（当前值）
         """
         url = f"{self.base_url}/info/chart"
         payload = {
             "good_id": good_id,
             "key": "lease_num",  # 查询在租数量
             "platform": 2,  # 悠悠有品平台
-            "period": 7,  # 近7天（最少数据即可）
+            "period": period,  # 查询周期（使用7天获取最新值，减少数据量）
             "style": "all_style"
         }
         
@@ -378,7 +383,14 @@ class CSQAQScanner:
         这是"验资"的关键步骤，用于识别"僵尸盘"
         优化：避免频繁触发429，采用渐进式重试策略
         """
-        url = f"{self.base_url}/info/get_good"
+        url = f"{self.base_url}/info/good"  # 注意：API路径是 /info/good，不是 /info/get_good
+        
+        # GET 请求的 headers（不需要 Content-Type: application/json）
+        # 只保留 ApiToken 和 User-Agent，与 chart 接口保持一致
+        get_headers = {
+            "ApiToken": self.api_token,
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
         
         # 优化重试策略：增加重试次数，拉长间隔，避免频繁触发429
         for retry in range(5):
@@ -390,10 +402,23 @@ class CSQAQScanner:
                 else:
                     time.sleep(0.5)  # 首次请求前短暂等待
                 
-                # 使用 session 进行请求（与 get_rank_list 保持一致）
-                # CSQAQ API 使用 id 作为参数名
+                # GET 请求：使用 id 作为参数名，显式传递 headers
+                # 注意：必须显式传递 headers，因为 session 的默认 headers 包含 Content-Type，GET 请求不需要
                 params = {"id": good_id}
-                resp = self.session.get(url, params=params, timeout=10, verify=False)
+                resp = self.session.get(url, params=params, headers=get_headers, timeout=10, verify=False)
+                
+                # 调试：记录请求详情（仅在第一次重试时）
+                if retry == 0:
+                    self.logger.debug(f"详情接口请求: URL={url}?id={good_id}, status={resp.status_code}")
+                    if resp.status_code == 401:
+                        # 尝试获取响应内容，看看是否有错误信息
+                        try:
+                            error_data = resp.json()
+                            error_msg = error_data.get("msg", "")
+                            error_code = error_data.get("code", "")
+                            self.logger.debug(f"401响应详情: code={error_code}, msg={error_msg}")
+                        except:
+                            self.logger.debug(f"401响应文本: {resp.text[:200]}")
                 
                 # 处理 429 限流：等待更长时间
                 if resp.status_code == 429:
@@ -424,7 +449,7 @@ class CSQAQScanner:
                     # 如果使用 id 失败，尝试 good_id（某些 API 版本可能不同）
                     if resp.status_code == 404 or resp.status_code == 400:
                         params = {"good_id": good_id}
-                        resp = self.session.get(url, params=params, timeout=10, verify=False)
+                        resp = self.session.get(url, params=params, headers=get_headers, timeout=10, verify=False)
                         if resp.status_code != 200:
                             self.logger.debug(f"获取饰品 {good_id} 详情失败: HTTP {resp.status_code}")
                             if retry < 4:
@@ -509,18 +534,22 @@ class CSQAQScanner:
         
         return None
 
-    def get_lease_stability(self, good_id: int) -> Optional[float]:
+    def get_lease_stability(self, good_id: int, period: int = 90) -> Optional[float]:
         """
-        稳定性检查
+        稳定性检查：计算租金波动率
         返回: 波动率 (0.0 - 1.0). 越低越好
-        如果数据获取失败，返回 None（而不是默认值0.5），由调用方决定如何处理
+        
+        :param good_id: 饰品ID
+        :param period: 查询周期（30=近30天，90=近90天）
+                      默认90天，与价格涨跌分析保持一致
+        :return: 波动率（变异系数 = 标准差/均值），如果失败返回 None
         """
         url = f"{self.base_url}/info/chart"  # 注意：API路径是 /info/chart，不是 /info/get_chart
         payload = {
             "good_id": good_id,
             "key": "short_lease_price",  # 检查短租价格走势
             "platform": 2,  # 悠悠有品平台
-            "period": 30,  # 近30天
+            "period": period,  # 近90天（与价格涨跌分析保持一致）
             "style": "all_style"
         }
 
@@ -719,13 +748,14 @@ class CSQAQScanner:
             self.logger.info(f"  📊 基础数据: 价格={yyyp_sell_price:.2f}元 | 年化={yyyp_lease_annual:.1f}%")
 
             # 基础过滤：90天跌幅（不能跌太狠）
+            # 注意：这是API计算的90天价格涨跌幅
             rate_90 = float(item.get('sell_price_rate_90', 0) or 0)
             if rate_90 < -15:  # 跌太狠的不要
-                self.logger.info(f"  ❌ [淘汰] {name}: 90天跌幅过大 ({rate_90:.1f}% < -15%)")
+                self.logger.info(f"  ❌ [淘汰] {name}: 90天价格跌幅过大 ({rate_90:.1f}% < -15%)")
                 time.sleep(0.3)
                 continue
             else:
-                self.logger.debug(f"  ✓ 90天跌幅检查通过: {rate_90:.1f}%")
+                self.logger.debug(f"  ✓ 90天价格跌幅检查通过: {rate_90:.1f}% (时间范围: 90天)")
 
             # === 核心过滤：从排行榜数据中获取关键指标 ===
             # 根据 API 文档，get_rank_list 已返回 yyyp_sell_num 和 yyyp_lease_price
@@ -759,6 +789,14 @@ class CSQAQScanner:
             else:
                 # 如果排行榜数据中没有，尝试调用详情接口
                 self.logger.debug(f"  📡 排行榜数据中无在租数量，尝试调用详情接口...")
+                
+                # 在调用详情接口之前，确保IP已绑定（如果距离上次绑定超过30秒，重新绑定）
+                now = time.time()
+                if self.last_bind_time == 0 or (now - self.last_bind_time) > 30:
+                    self.logger.debug(f"距离上次绑定已超过30秒，重新绑定IP以确保详情接口可用...")
+                    self.bind_local_ip(force=True)
+                    time.sleep(1)  # 等待绑定生效
+                
                 details = self.get_item_details(good_id)
                 
                 if details:
@@ -776,7 +814,7 @@ class CSQAQScanner:
                     if lease_num_from_chart is not None:
                         lease_num = lease_num_from_chart
                         consecutive_401_errors = 0
-                        self.logger.info(f"  ✓ 从chart接口获取在租数量: {lease_num}人")
+                        self.logger.info(f"  ✓ 从chart接口获取在租数量: {lease_num}人 (当前值, 来自7天数据的最新值)")
                     else:
                         # 所有方法都失败
                         self.logger.warning(f"  ❌ [淘汰] {name}: 无法获取在租数量（详情接口和chart接口均失败），宁缺毋滥 -> 跳过")
@@ -799,31 +837,33 @@ class CSQAQScanner:
 
             # 4. "供过于求"熔断（出租率计算）
             # 如果卖的人有500个，租的人只有30个，出租率 6%，很难轮到你
+            # 注意：在租数量和在售数量都是当前值（实时数据），时间范围一致
             if sell_num > 0:
                 lease_ratio = lease_num / sell_num
             else:
                 lease_ratio = 0
             
             if lease_ratio < self.MIN_LEASE_RATIO:
-                self.logger.info(f"  ❌ [淘汰] {name}: 出租率过低 ({lease_ratio:.1%} < {self.MIN_LEASE_RATIO:.1%}) | 在售:{sell_num}人 在租:{lease_num}人")
+                self.logger.info(f"  ❌ [淘汰] {name}: 出租率过低 ({lease_ratio:.1%} < {self.MIN_LEASE_RATIO:.1%}) | 在售:{sell_num}人 在租:{lease_num}人 (时间范围: 当前值)")
                 time.sleep(0.3)
                 continue
             else:
-                self.logger.debug(f"  ✓ 出租率检查通过: {lease_ratio:.1%} (在售:{sell_num}人 在租:{lease_num}人)")
+                self.logger.debug(f"  ✓ 出租率检查通过: {lease_ratio:.1%} (在售:{sell_num}人 在租:{lease_num}人, 时间范围: 当前值)")
 
             # 5. 租金稳定性检查
-            self.logger.debug(f"  📡 正在检查租金稳定性...")
-            volatility = self.get_lease_stability(good_id)
+            # 注意：使用90天数据计算波动率，与价格涨跌分析保持一致
+            self.logger.debug(f"  📡 正在检查租金稳定性（90天数据）...")
+            volatility = self.get_lease_stability(good_id, period=90)
             if volatility is None:
                 # 如果无法获取波动率数据，记录警告但不跳过（因为可能是API问题，不是饰品问题）
                 self.logger.warning(f"  ⚠️ {name}: 无法获取租金稳定性数据，跳过波动率检查（可能是API限流或401错误）")
                 volatility = 0.0  # 设置为0，表示无法判断
             elif volatility > self.MAX_VOLATILITY:
-                self.logger.info(f"  ❌ [淘汰] {name}: 租金波动率过高 ({volatility:.1%} > {self.MAX_VOLATILITY:.1%})")
+                self.logger.info(f"  ❌ [淘汰] {name}: 租金波动率过高 ({volatility:.1%} > {self.MAX_VOLATILITY:.1%}, 时间范围: 90天)")
                 time.sleep(0.3)
                 continue
             else:
-                self.logger.debug(f"  ✓ 租金稳定性检查通过: {volatility:.1%}")
+                self.logger.debug(f"  ✓ 租金稳定性检查通过: {volatility:.1%} (时间范围: 90天)")
 
             # === 通过所有测试 ===
             yyyp_lease_annual = item.get("yyyp_lease_annual", 0)
@@ -842,10 +882,10 @@ class CSQAQScanner:
             self.logger.info(f"        - 日租: {daily_rent:.2f}元")
             self.logger.info(f"        - 在租: {lease_num}人")
             self.logger.info(f"        - 在售: {sell_num}人")
-            self.logger.info(f"        - 出租率: {lease_ratio:.1%}")
-            self.logger.info(f"        - 年化: {yyyp_lease_annual:.1f}%")
-            self.logger.info(f"        - 90天涨跌: {rate_90:.1f}%")
-            self.logger.info(f"        - 租金波动率: {volatility:.1%}")
+            self.logger.info(f"        - 出租率: {lease_ratio:.1%} (当前值)")
+            self.logger.info(f"        - 年化: {yyyp_lease_annual:.1f}% (当前值)")
+            self.logger.info(f"        - 90天价格涨跌: {rate_90:.1f}% (90天)")
+            self.logger.info(f"        - 租金波动率: {volatility:.1%} (90天, 变异系数)")
             self.logger.info(f"        - 推荐求购价: {buy_limit:.2f}元")
 
             final_whitelist.append({
