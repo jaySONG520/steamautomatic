@@ -91,16 +91,26 @@ class UUOrderExecutor:
             
             # 解析结果
             res_data = res.json()
-            if res_data.get("Code") == 0:
+            code = res_data.get("Code") or res_data.get("code", 0)
+            
+            if code == 0:
                 order_no = res_data.get("Data", {}).get("orderNo", "未知")
                 self.logger.info(f"✅ 挂单成功！订单号: {order_no}")
                 return True
+            elif code == 84101:
+                # 登录状态失效，需要重新登录
+                msg = res_data.get("Msg") or res_data.get("msg", "登录信息异常，请重新登录！")
+                self.logger.error(f"⛔ 登录状态失效: {msg}")
+                raise Exception("登录状态失效，请重新登录")  # 抛出异常，让上层处理
             else:
-                msg = res_data.get("Msg", "未知错误")
-                self.logger.warning(f"❌ 挂单失败: {msg}")
+                msg = res_data.get("Msg") or res_data.get("msg", "未知错误")
+                self.logger.warning(f"❌ 挂单失败: {msg} (code: {code})")
                 return False
                 
         except Exception as e:
+            # 如果是登录失效异常，直接抛出，让上层处理
+            if "登录状态失效" in str(e) or "84101" in str(e):
+                raise
             self.logger.error(f"执行器异常: {e}")
             return False
 
@@ -157,7 +167,7 @@ class UUAutoInvest:
 
     def fetch_candidates_from_whitelist(self):
         """
-        从 Scanner.py 生成的白名单读取候选饰品列表
+        从 Scanner.py 生成的白名单读取候选饰品列表（仅选择 S/A 级优质资产）
         白名单文件：config/whitelist.json
         """
         candidates = []
@@ -183,32 +193,32 @@ class UUAutoInvest:
 
             self.logger.info(f"从白名单读取候选饰品（共 {len(whitelist_data)} 个）")
 
+            valid_count = 0
             for item in whitelist_data:
                 template_id = str(item.get("templateId", ""))
                 name = item.get("name", "未知")
-                buy_limit = item.get("buy_limit", 0)  # Scanner.py 推荐的求购价
-                yyyp_sell_price = item.get("yyyp_sell_price", 0)
+                tier = item.get("tier", "C")  # 资产分级
                 roi = item.get("roi", 0)
-
-                if not template_id:
+                
+                # === 核心改动：只选择 S/A 级优质资产 ===
+                if tier not in ["S", "A"]:
                     continue
                 
-                # 如果没有推荐价格，使用市场价的92%作为默认值
-                if buy_limit <= 0 and yyyp_sell_price > 0:
-                    buy_limit = round(yyyp_sell_price * 0.92, 2)
-
-                if buy_limit <= 0:
+                # 价格以实时为准，我们不再依赖 buy_limit (求购价)，而是关注 current_price (售价)
+                market_price = item.get("yyyp_sell_price", 0)
+                if market_price <= 0:
                     continue
 
                 candidates.append({
                     "templateId": template_id,
                     "name": name,
-                    "market_price": yyyp_sell_price,
-                    "target_buy_price": buy_limit,  # Scanner 推荐的求购价
+                    "market_price": market_price,  # 记录白名单时的售价作为参考
+                    "tier": tier,                   # 记录评级
                     "roi": roi,
                 })
+                valid_count += 1
 
-            self.logger.info(f"从白名单读取到 {len(candidates)} 个优质候选饰品")
+            self.logger.info(f"白名单共 {len(whitelist_data)} 个，精选出 {valid_count} 个核心资产 (S/A级)")
             return candidates
 
         except Exception as e:
@@ -219,11 +229,11 @@ class UUAutoInvest:
 
     def get_item_details_from_uu(self, template_id):
         """
-        从悠悠有品获取饰品的详细信息（仅用于获取 marketHashName，不依赖价格）
+        获取饰品详情 + 实时最低售价
         返回: (detail_dict, is_system_busy)
         """
         try:
-            # 查询在售列表获取详情（只需要 marketHashName）
+            # 获取在售列表 (pageSize=1 且默认排序通常是价格升序，取第一个就是最低价)
             res = self.uuyoupin.get_market_sale_list_with_abrade(
                 int(template_id), pageIndex=1, pageSize=1
             )
@@ -278,20 +288,24 @@ class UUAutoInvest:
                 return None, False
 
             detail = commodity_list[0]
-            # 只获取 marketHashName（用于挂单），不依赖价格
             market_hash_name = detail.get("commodityHashName") or detail.get("MarketHashName", "")
             
-            if not market_hash_name:
-                self.logger.warning(f"无法获取 marketHashName")
+            # === 核心修改：提取实时最低售价 ===
+            # 注意：UU API 返回的 Price 通常是字符串，需要转 float
+            lowest_sell_price = float(detail.get("Price", 0) or 0)
+
+            if not market_hash_name or lowest_sell_price <= 0:
+                self.logger.warning(f"无法获取 marketHashName 或最低售价无效")
                 return None, False
             
             return {
                 "marketHashName": market_hash_name,
+                "lowest_sell_price": lowest_sell_price  # 返回最低售价
             }, False  # 成功时返回 False（不是系统繁忙）
 
         except Exception as e:
             self.logger.error(f"获取饰品 {template_id} 详情失败: {e}")
-            return None
+            return None, False
 
     def _get_csqaq_api_token(self):
         """获取 CSQAQ API Token"""
@@ -301,6 +315,53 @@ class UUAutoInvest:
         invest_config = self.config.get("uu_auto_invest", {})
         self._csqaq_api_token = invest_config.get("csqaq_api_token", "")
         return self._csqaq_api_token
+
+    def _get_details_from_csqaq(self, template_id, item_name):
+        """
+        [新增] 替代 UU 接口：从 CSQAQ 获取实时售价和 HashName
+        优点：完全不触发 UU 风控，安全查价
+        """
+        api_token = self._get_csqaq_api_token()
+        if not api_token:
+            self.logger.warning("未配置 CSQAQ Token，无法进行安全查价")
+            return None
+
+        url = f"{self._csqaq_base_url}/info/good"
+        headers = {"ApiToken": api_token}
+        params = {"id": int(template_id)}
+
+        try:
+            # 这里的请求发给 CSQAQ，不会触发 UU 的风控
+            resp = requests.get(url, headers=headers, params=params, timeout=10)
+            if resp.status_code != 200:
+                self.logger.warning(f"CSQAQ API 请求失败: {resp.status_code}")
+                return None
+
+            result = resp.json()
+            if result.get("code") != 200:
+                self.logger.warning(f"CSQAQ 业务错误: {result.get('msg')}")
+                return None
+
+            goods_info = result.get("data", {}).get("goods_info", {})
+            if not goods_info:
+                return None
+
+            # 提取关键信息
+            market_hash_name = goods_info.get("market_hash_name", "")
+            lowest_sell_price = float(goods_info.get("yyyp_sell_price", 0) or 0)
+
+            if not market_hash_name:
+                self.logger.warning(f"{item_name} 无法从 CSQAQ 获取 HashName")
+                return None
+
+            return {
+                "marketHashName": market_hash_name,
+                "lowest_sell_price": lowest_sell_price
+            }
+
+        except Exception as e:
+            self.logger.error(f"CSQAQ 查价异常: {e}")
+            return None
 
 
     def _get_optimal_purchase_price(self, template_id, item_name, recommended_price, market_price):
@@ -435,9 +496,56 @@ class UUAutoInvest:
         
         return optimal_price
 
+    # ==========================================
+    # 核心改造 2: 二次确认校验 (Pre-Trade Check)
+    # ==========================================
+    
+    def pre_trade_check(self, signal: dict, current_balance: float) -> bool:
+        """
+        下单前最后一次风控校验
+        :param signal: 交易信号
+        :param current_balance: 当前余额
+        :return: 是否通过校验
+        """
+        item_name = signal["name"]
+        target_price = signal["target_price"]
+        market_price = signal["market_price"]
+        
+        # 1. 余额硬校验
+        if current_balance < target_price:
+            self.logger.warning(f"⛔ [风控拦截] {item_name} 余额不足 (缺 {target_price - current_balance:.2f}元)")
+            return False
+        
+        # 2. 价格合理性校验 (允许 target_price == market_price，因为我们是按售价购买)
+        # 如果求购价明显高于市场价（超过1%），可能是数据异常
+        if target_price > market_price * 1.01:
+            self.logger.warning(f"⛔ [风控拦截] {item_name} 价格异常 (求购 {target_price:.2f} > 市场 {market_price:.2f} * 1.01)")
+            return False
+        
+        # 3. 价格区间最终校验
+        invest_config = self.config.get("uu_auto_invest", {})
+        min_price = invest_config.get("min_price", 100)
+        max_price = invest_config.get("max_price", 2000)
+        
+        if not (min_price <= target_price <= max_price):
+            self.logger.warning(f"⛔ [风控拦截] {item_name} 价格超出配置区间 ({target_price:.2f}元)")
+            return False
+        
+        return True
+
     def execute_investment(self):
         """执行自动投资任务（重构版：信号驱动）"""
         self.logger.info(">>> 开始自动投资 (架构升级版) <<<")
+
+        # 0. 确保子组件已初始化（防止直接调用 execute_investment 时未初始化）
+        if self.signal_manager is None or self.executor is None:
+            if self.uuyoupin is None:
+                self.logger.error("UUAccount 未初始化，无法执行投资任务")
+                return
+            # 延迟初始化子组件
+            self.signal_manager = SignalManager(self.logger)
+            self.executor = UUOrderExecutor(self.uuyoupin, self.logger, self.config)
+            self.logger.info("子组件已延迟初始化")
 
         # 1. 刷新余额并检查最低余额要求
         try:
@@ -493,101 +601,124 @@ class UUAutoInvest:
         busy_counter = 0  # 连续繁忙计数器（核心改动2：一击脱离）
         max_busy_count = 2  # 连续2次遇到系统繁忙就停止任务
         
+        # 遍历候选列表
         for index, item in enumerate(candidates):
             # 检查今日购买上限
             if success_count >= max_orders:
                 self.logger.info(f"已达到本次运行最大挂单数 ({max_orders})，停止任务")
                 break
 
-            # === 核心改动2：连续风控自动停止（一击脱离）===
-            # 如果连续2次遇到系统繁忙，直接放弃本次任务
+            # 连续风控检测
             if busy_counter >= max_busy_count:
-                self.logger.error("!!! 连续触发风控，强制停止本次任务，建议休息几小时后再来 !!!")
-                self.logger.error("当前IP/账号可能已被标记，继续请求只会延长封禁时间")
+                self.logger.error("!!! 连续触发风控，强制停止 !!!")
                 break
-            # ========================
 
             template_id = item["templateId"]
             item_name = item["name"]
+            
+            # === 修改点 1: 直接读取 Scanner 提供的白名单价格 (本地数据) ===
+            # 不要在这里请求 get_item_details_from_uu !!!
+            whitelist_price = item.get("market_price", 0)
+            
+            # 如果白名单里都没价格，直接跳过 (省一次请求)
+            if whitelist_price <= 0:
+                self.logger.debug(f"{item_name} 白名单中无市场价，跳过")
+                continue
 
+            # === 修改点 2: 本地预判 (先看钱够不够) ===
+            # 这一步完全不需要联网，能挡掉很多无意义的请求
+            if current_balance < whitelist_price:
+                self.logger.warning(f"💰 余额不足买 {item_name} (需 {whitelist_price:.2f}元)，本地跳过")
+                continue
+
+            # === 修改点 3: 只有决定买了，才发起网络请求 (延迟确认) ===
             try:
-                # === 核心改良：随机延迟（模拟人类行为）===
-                # 不要固定睡眠，随机睡眠可以让行为更像人类
+                # 模拟一点延迟，不用太久，因为已经是"准下单"状态了
                 sleep_time = random.uniform(min_interval, max_interval)
-                self.logger.info(f"[{index+1}/{len(candidates)}] 正在瞄准... 等待 {sleep_time:.1f} 秒")
+                self.logger.info(f"[{index+1}/{len(candidates)}] 正在核实 {item_name} ...")
                 time.sleep(sleep_time)
-                # ========================
+
+                # =========== 【安全查价：使用 CSQAQ 替代 UU】 ===========
                 
-                # 获取悠悠有品的实时详情
-                detail, is_system_busy = self.get_item_details_from_uu(template_id)
+                # 1. 改为从 CSQAQ 获取实时数据 (不再请求 UU，避免风控)
+                real_info = self._get_details_from_csqaq(template_id, item_name)
                 
-                # === 核心改动2：一击脱离（遇到系统繁忙，小憩后继续，但计数）===
-                if is_system_busy:
-                    busy_counter += 1
-                    self.logger.warning(f"系统繁忙 ({busy_counter}/{max_busy_count})，暂停 60 秒...")
-                    time.sleep(60)  # 小憩一下，不连续请求
-                    continue  # 跳过当前这个，继续下一个
-                else:
-                    busy_counter = 0  # 成功或者其他错误，重置繁忙计数
-                # ========================
-                
-                if not detail:
-                    self.logger.debug(f"无法获取 {item_name} 详情，跳过")
+                if not real_info:
+                    self.logger.warning(f"无法从 CSQAQ 获取 {item_name} 数据，跳过")
                     continue
 
-                # 使用白名单中的商品名称和价格
-                commodity_name = item_name  # 使用白名单中的名称
-                market_hash_name = detail["marketHashName"]
-                
-                # 直接使用白名单中的市场价（更准确）
-                lowest_price = item.get("market_price", 0)
-                if lowest_price <= 0:
-                    self.logger.warning(f"{item_name} 白名单中无市场价，跳过")
-                    continue
-                
-                self.logger.info(f"{item_name} 市场价: {lowest_price:.2f}元 (来自白名单)")
+                # 2. 提取数据
+                real_time_lowest_price = real_info["lowest_sell_price"]
+                market_hash_name = real_info["marketHashName"]  # HashName 也从这里拿
 
-                # 计算求购价：优先使用当前最高求购价+1元
-                target_price = self._get_optimal_purchase_price(template_id, item_name, item.get("target_buy_price", 0), lowest_price)
-                
-                if target_price <= 0:
-                    self.logger.warning(f"{item_name} 无法确定合适的求购价，跳过")
+                # 3. 价格跳涨保护 (如果实时价比白名单贵 2%，放弃)
+                if whitelist_price > 0 and real_time_lowest_price > whitelist_price * 1.02:
+                    self.logger.warning(f"📉 {item_name} 价格跳涨 ({whitelist_price:.2f}->{real_time_lowest_price:.2f})，放弃")
                     continue
+                    
+                # 4. 实时余额检查
+                if current_balance < real_time_lowest_price:
+                    self.logger.warning(f"余额不足购买 {item_name} (需 {real_time_lowest_price:.2f}元)")
+                    continue
+
+                # 5. 准备下单数据
+                target_price = real_time_lowest_price
                 
-                # === 步骤 C: 生成信号 (Signal Generation) ===
-                # 构建信号对象
+                # 构建信号
                 signal = {
                     "templateId": template_id,
                     "marketHashName": market_hash_name,
                     "name": item_name,
-                    "market_price": lowest_price,
+                    "market_price": real_time_lowest_price,
                     "target_price": target_price,
                     "roi": item.get("roi", 0),
-                    "tier": item.get("tier", "C"),  # 资产分级（如果有）
+                    "tier": item.get("tier", "Unknown"),
                     "timestamp": datetime.now().isoformat(),
-                    "source": "UUAutoInvest",
-                    "strategy_version": "v2_signal_separated"
+                    "source": "UUAutoInvest_Sniper_V3",
+                    "strategy_version": "v3_direct_sniper"
                 }
-                
-                # 信号落地（留痕）
+
                 self.signal_manager.save_signal(signal)
-                
-                # === 步骤 D: 二次校验 (Pre-Trade Check) ===
-                # 这一步是把关的最后一道防线
+
+                # 二次校验
                 if not self.pre_trade_check(signal, current_balance):
                     continue
-                
-                # === 步骤 E: 交给执行器 (Execution) ===
-                if self.executor.execute_buy(signal):
-                    success_count += 1
-                    current_balance -= target_price  # 更新本地余额缓存
-                    self.logger.info("买到了，贤者模式 60 秒...")
-                    time.sleep(60)
+
+                # 执行下单
+                self.logger.info(f"⚔️ 确认无误，发起购买 -> {item_name} | {target_price:.2f}元")
+                try:
+                    if self.executor.execute_buy(signal):
+                        success_count += 1
+                        current_balance -= target_price
+                        self.logger.info("买到了，休息 60 秒...")
+                        time.sleep(60)
+                except Exception as buy_error:
+                    # 如果是登录失效，停止整个任务
+                    if "登录状态失效" in str(buy_error) or "84101" in str(buy_error):
+                        self.logger.error("=" * 60)
+                        self.logger.error("⛔ 检测到悠悠有品登录状态失效！")
+                        self.logger.error("请重新登录悠悠有品并更新 Token")
+                        self.logger.error("任务已停止，请修复登录问题后重新运行")
+                        self.logger.error("=" * 60)
+                        return  # 直接返回，停止整个任务
+                    else:
+                        # 其他错误继续处理下一个
+                        self.logger.warning(f"下单失败: {buy_error}")
+                        continue
 
             except Exception as e:
-                handle_caught_exception(e, "UUAutoInvest")
-                self.logger.error(f"处理商品 {item_name} 时出错: {e}")
-                continue
+                # 如果是登录失效，停止整个任务
+                if "登录状态失效" in str(e) or "84101" in str(e):
+                    self.logger.error("=" * 60)
+                    self.logger.error("⛔ 检测到悠悠有品登录状态失效！")
+                    self.logger.error("请重新登录悠悠有品并更新 Token")
+                    self.logger.error("任务已停止，请修复登录问题后重新运行")
+                    self.logger.error("=" * 60)
+                    return  # 直接返回，停止整个任务
+                else:
+                    handle_caught_exception(e, "UUAutoInvest")
+                    self.logger.error(f"处理商品 {item_name} 时出错: {e}")
+                    continue
 
         if busy_counter >= max_busy_count:
             self.logger.warning(f"本次任务因连续风控提前结束，成功挂单 {success_count} 个")
