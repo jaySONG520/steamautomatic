@@ -49,9 +49,100 @@ class UUAutoInvest:
             self.logger.error("自动投资插件初始化失败")
             return True
 
+    def fetch_candidates_from_whitelist(self):
+        """
+        从选品器生成的白名单读取候选饰品列表
+        支持两种格式：
+        1. Scanner.py 生成的 whitelist.json（简化格式，直接是数组）
+        2. Hunter.py 生成的 invest_whitelist.json（完整格式，包含 metadata）
+        """
+        candidates = []
+        
+        # 优先级：Scanner.py 的 whitelist.json > Hunter.py 的 invest_whitelist.json
+        scanner_whitelist = "config/whitelist.json"
+        hunter_whitelist = "config/invest_whitelist.json"
+        
+        whitelist_file = None
+        if os.path.exists(scanner_whitelist):
+            whitelist_file = scanner_whitelist
+            self.logger.info("检测到 Scanner.py 生成的白名单，优先使用")
+        elif os.path.exists(hunter_whitelist):
+            whitelist_file = hunter_whitelist
+            self.logger.info("检测到 Hunter.py 生成的白名单")
+        else:
+            self.logger.debug("未找到白名单文件，请先运行 Scanner.py 或 Hunter.py")
+            return []
+
+        try:
+            with open(whitelist_file, "r", encoding="utf-8") as f:
+                whitelist_data = json5.load(f)
+
+            items = []
+            generated_at = "未知时间"
+            
+            # 判断格式：如果是数组，说明是 Scanner.py 生成的简化格式
+            if isinstance(whitelist_data, list):
+                items = whitelist_data
+                self.logger.info(f"从 Scanner 白名单读取候选饰品（共 {len(items)} 个）")
+            # 如果是字典，说明是 Hunter.py 生成的完整格式
+            elif isinstance(whitelist_data, dict):
+                items = whitelist_data.get("items", [])
+                generated_at = whitelist_data.get("generated_at", "未知时间")
+                self.logger.info(f"从 Hunter 白名单读取候选饰品（生成时间: {generated_at}，共 {len(items)} 个）")
+            else:
+                self.logger.warning("白名单文件格式错误")
+                return []
+
+            if not items:
+                self.logger.warning("白名单为空")
+                return []
+
+            for item in items:
+                # 兼容两种格式的字段名
+                template_id = str(item.get("templateId") or item.get("id", ""))
+                good_id = item.get("good_id") or template_id
+                name = item.get("name", "未知")
+                
+                # Scanner.py 使用 buy_limit，Hunter.py 使用 target_buy_price
+                target_price = item.get("buy_limit") or item.get("target_buy_price", 0)
+                yyyp_sell_price = item.get("yyyp_sell_price", 0)
+                roi = item.get("roi", 0)
+                stability_score = item.get("stability_score", 0)
+                volatility = item.get("volatility", 0)
+
+                if not template_id:
+                    continue
+                
+                # 如果没有推荐价格，使用市场价的92%作为默认值
+                if target_price <= 0 and yyyp_sell_price > 0:
+                    target_price = round(yyyp_sell_price * 0.92, 2)
+
+                if target_price <= 0:
+                    continue
+
+                candidates.append({
+                    "templateId": template_id,
+                    "good_id": good_id,
+                    "name": name,
+                    "market_price": yyyp_sell_price,
+                    "target_buy_price": target_price,  # 选品器推荐的求购价
+                    "roi": roi,
+                    "stability_score": stability_score,
+                    "volatility": volatility,
+                    "from_whitelist": True,  # 标记来自白名单
+                })
+
+            self.logger.info(f"从白名单读取到 {len(candidates)} 个优质候选饰品")
+            return candidates
+
+        except Exception as e:
+            handle_caught_exception(e, "UUAutoInvest")
+            self.logger.error(f"读取白名单文件失败: {e}")
+            return []
+
     def fetch_candidates_from_file(self):
         """
-        从本地文件读取候选饰品列表
+        从本地文件读取候选饰品列表（兼容旧格式）
         用户需要手动从第三方网站（如 csqaq.com/rank）获取数据并保存为 JSON 文件
         """
         candidates = []
@@ -59,8 +150,7 @@ class UUAutoInvest:
         candidates_file = os.path.join(config_folder, "invest_candidates.json")
 
         if not os.path.exists(candidates_file):
-            self.logger.warning(f"未找到候选饰品文件: {candidates_file}")
-            self.logger.info("请从第三方网站获取数据并保存为 invest_candidates.json")
+            self.logger.debug(f"未找到候选饰品文件: {candidates_file}")
             return []
 
         try:
@@ -523,18 +613,26 @@ class UUAutoInvest:
             self.logger.error(f"获取余额失败: {e}")
             return
 
-        # 2. 获取候选名单（优先使用API，如果API不可用则使用文件）
+        # 2. 获取候选名单（优先级：白名单 > API > 文件）
         candidates = []
+        use_whitelist = invest_config.get("use_whitelist", True)  # 默认优先使用白名单
         use_api = invest_config.get("use_api", True)
         
-        if use_api:
-            self.logger.info("正在使用API方式获取候选饰品...")
+        # 优先使用选品器生成的白名单（Scanner.py 或 Hunter.py）
+        if use_whitelist:
+            self.logger.info("正在从白名单读取候选饰品（Scanner/Hunter 智能选品）...")
+            candidates = self.fetch_candidates_from_whitelist()
+        
+        # 如果白名单为空，尝试使用 API
+        if not candidates and use_api:
+            self.logger.info("白名单为空，正在使用API方式获取候选饰品...")
             candidates = self.fetch_candidates_from_api()
             # 如果API获取失败，尝试使用文件
             if not candidates:
                 self.logger.info("API获取失败，尝试从文件读取...")
                 candidates = self.fetch_candidates_from_file()
-        else:
+        elif not candidates:
+            # 如果禁用白名单且禁用API，使用文件
             self.logger.info("正在使用文件方式获取候选饰品...")
             candidates = self.fetch_candidates_from_file()
 
@@ -545,7 +643,14 @@ class UUAutoInvest:
         # === 核心改动1：打乱顺序（避免每次都从第1个开始）===
         # 避免每次都从第1个开始请求，防止死磕同一个坏数据
         random.shuffle(candidates)
-        self.logger.info(f">>> 获取到 {len(candidates)} 个候选饰品，已随机打乱顺序（狙击模式）<<<")
+        
+        # 如果使用白名单，每次运行只尝试前3个，防止频率限制
+        if candidates and candidates[0].get("from_whitelist"):
+            max_try = invest_config.get("max_whitelist_try", 3)  # 每次最多尝试3个白名单饰品
+            candidates = candidates[:max_try]
+            self.logger.info(f">>> 从白名单获取到 {len(candidates)} 个候选饰品，已随机打乱顺序（狙击模式，每次最多尝试 {max_try} 个）<<<")
+        else:
+            self.logger.info(f">>> 获取到 {len(candidates)} 个候选饰品，已随机打乱顺序（狙击模式）<<<")
 
         # 3. 遍历并执行购买策略（狙击模式）
         invest_config = self.config.get("uu_auto_invest", {})
@@ -606,16 +711,30 @@ class UUAutoInvest:
                 market_hash_name = detail["marketHashName"]
                 lowest_price = detail["lowestPrice"]
 
-                # 计算求购价：逻辑调整
-                # 策略：取 (市场最低价 * 0.9) 和 (API推荐求购价) 的较小值，防止亏本
-                target_price = round(lowest_price * buy_price_ratio, 2)
-                
-                # 如果API提供了求购价参考，使用更保守的价格
-                if "yyyp_buy_price" in item and item["yyyp_buy_price"] > 0:
-                    # 如果计算出的求购价高于API提供的求购价，使用API的求购价（更保守）
-                    if target_price > item["yyyp_buy_price"]:
-                        target_price = round(item["yyyp_buy_price"] * 0.98, 2)
-                        self.logger.debug(f"{item_name} 使用API求购价参考: {target_price:.2f}")
+                # 计算求购价：优先使用白名单推荐价格
+                if item.get("from_whitelist"):
+                    # 优先使用白名单推荐的求购价（Scanner/Hunter 已经经过严格筛选）
+                    buy_limit = item.get("buy_limit")  # Scanner.py 格式
+                    target_buy_price = item.get("target_buy_price")  # Hunter.py 格式
+                    recommended_price = buy_limit or target_buy_price
+                    
+                    if recommended_price and recommended_price > 0:
+                        target_price = recommended_price
+                        self.logger.info(f"{item_name} 使用白名单推荐求购价: {target_price:.2f} (市场价: {lowest_price:.2f})")
+                    else:
+                        # 如果白名单没有推荐价格，使用市场价的92%
+                        target_price = round(lowest_price * 0.92, 2)
+                        self.logger.info(f"{item_name} 使用默认求购价（市场价92%）: {target_price:.2f} (市场价: {lowest_price:.2f})")
+                else:
+                    # 否则使用配置的比例计算
+                    target_price = round(lowest_price * buy_price_ratio, 2)
+                    
+                    # 如果API提供了求购价参考，使用更保守的价格
+                    if "yyyp_buy_price" in item and item["yyyp_buy_price"] > 0:
+                        # 如果计算出的求购价高于API提供的求购价，使用API的求购价（更保守）
+                        if target_price > item["yyyp_buy_price"]:
+                            target_price = round(item["yyyp_buy_price"] * 0.98, 2)
+                            self.logger.debug(f"{item_name} 使用API求购价参考: {target_price:.2f}")
                 
                 # 验证求购价必须低于市场价
                 if target_price >= lowest_price:
