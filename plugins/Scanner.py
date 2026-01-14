@@ -341,42 +341,6 @@ class CSQAQScanner:
         
         return all_items
 
-    def get_lease_num_from_chart(self, good_id: int, period: int = 7) -> Optional[int]:
-        """
-        从chart接口获取在租数量（备用方法）
-        当get_item_details失败时使用
-        
-        :param good_id: 饰品ID
-        :param period: 查询周期（7=近7天，30=近30天，90=近90天）
-                      注意：返回的是该周期内最新的在租数量（数组最后一个值）
-        :return: 在租数量（当前值）
-        """
-        url = f"{self.base_url}/info/chart"
-        payload = {
-            "good_id": good_id,
-            "key": "lease_num",  # 查询在租数量
-            "platform": 2,  # 悠悠有品平台
-            "period": period,  # 查询周期（使用7天获取最新值，减少数据量）
-            "style": "all_style"
-        }
-        
-        try:
-            time.sleep(0.5)  # 遵守频率限制
-            resp = self.session.post(url, json=payload, timeout=10, verify=False)
-            
-            if resp.status_code == 200:
-                result = resp.json()
-                if result.get("code") == 200:
-                    data = result.get("data", {})
-                    main_data = data.get("main_data", [])
-                    if main_data and len(main_data) > 0:
-                        # 返回最新的在租数量（最后一个值）
-                        return int(main_data[-1]) if main_data[-1] is not None else None
-            return None
-        except Exception as e:
-            self.logger.debug(f"从chart接口获取在租数量失败: {e}")
-            return None
-
     def get_item_details(self, good_id: int) -> Optional[dict]:
         """
         获取详情：查在租数量、日租金、在售数量
@@ -757,73 +721,52 @@ class CSQAQScanner:
             else:
                 self.logger.debug(f"  ✓ 90天价格跌幅检查通过: {rate_90:.1f}% (时间范围: 90天)")
 
-            # === 核心过滤：从排行榜数据中获取关键指标 ===
-            # 根据 API 文档，get_rank_list 已返回 yyyp_sell_num 和 yyyp_lease_price
-            # 尝试从排行榜数据中直接获取在租数量（如果 API 返回了该字段）
+            # === 核心过滤：优先使用 /api/v1/info/good 接口获取完整数据 ===
+            # 该接口返回的数据非常全面，包括：yyyp_buy_price, yyyp_sell_price, yyyp_lease_num, 
+            # yyyp_sell_num, yyyp_lease_price 等所有需要的数据
+            # 策略：先用网站筛选（get_rank_list），再用详情接口（get_item_details）获取完整数据
             
-            # 1. 先从排行榜数据获取所有可用字段
-            sell_num = int(item.get('yyyp_sell_num', 0) or 0)  # 在售数量
-            daily_rent = float(item.get('yyyp_lease_price', 0) or 0)  # 日租金
+            # 在调用详情接口之前，确保IP已绑定（如果距离上次绑定超过30秒，重新绑定）
+            now = time.time()
+            if self.last_bind_time == 0 or (now - self.last_bind_time) > 30:
+                self.logger.debug(f"距离上次绑定已超过30秒，重新绑定IP以确保详情接口可用...")
+                self.bind_local_ip(force=True)
+                time.sleep(1)  # 等待绑定生效
             
-            # 尝试从排行榜数据中获取在租数量（如果 API 返回了该字段）
-            # 注意：根据 API 文档，排行榜数据可能不包含在租数量，但我们可以尝试获取
-            lease_num_from_rank = item.get('yyyp_lease_num')  # 可能为 None
+            # 调用详情接口获取完整数据（这是"验资"的关键步骤）
+            details = self.get_item_details(good_id)
             
-            # 2. 先进行基础检查（不需要在租数量）
-            # 3. "甚至不够电费"熔断（拒绝"几毛钱"生意）
+            if not details:
+                # 详情接口失败，宁缺毋滥 -> 跳过
+                self.logger.warning(f"  ❌ [淘汰] {name}: 无法获取详情数据（/api/v1/info/good 接口失败），宁缺毋滥 -> 跳过")
+                consecutive_401_errors += 1
+                if consecutive_401_errors >= max_401_errors:
+                    self.logger.error(f"连续 {max_401_errors} 次 401 错误，可能IP未绑定或Token失效，停止扫描")
+                    break
+                time.sleep(0.5)
+                continue
+            
+            # 成功获取详情，重置错误计数
+            consecutive_401_errors = 0
+            
+            # 从详情接口获取所有关键数据（优先使用详情接口的数据，更准确）
+            lease_num = int(details.get('yyyp_lease_num', 0) or 0)  # 在租数量
+            sell_num = int(details.get('yyyp_sell_num', 0) or 0)  # 在售数量
+            daily_rent = float(details.get('yyyp_lease_price', 0) or 0)  # 日租金
+            yyyp_buy_price = float(details.get('yyyp_buy_price', 0) or 0)  # 求购价
+            yyyp_sell_price = float(details.get('yyyp_sell_price', 0) or item.get('yyyp_sell_price', 0) or 0)  # 在售价（优先使用详情接口）
+            
+            self.logger.info(f"  ✓ 从详情接口获取完整数据: 在租={lease_num}人 | 在售={sell_num}人 | 日租={daily_rent:.2f}元 | 求购价={yyyp_buy_price:.2f}元 | 在售价={yyyp_sell_price:.2f}元")
+            
+            # 1. "甚至不够电费"熔断（拒绝"几毛钱"生意）
             if daily_rent < self.MIN_DAILY_RENT:
                 self.logger.info(f"  ❌ [淘汰] {name}: 日租金过低 ({daily_rent:.2f}元 < {self.MIN_DAILY_RENT}元)")
                 time.sleep(0.3)
                 continue
             else:
                 self.logger.debug(f"  ✓ 日租金检查通过: {daily_rent:.2f}元")
-            
-            # 4. 获取在租数量（优先使用排行榜数据，如果不存在则调用详情接口）
-            lease_num = 0
-            details = None
-            
-            # 如果排行榜数据中已有在租数量，直接使用
-            if lease_num_from_rank is not None:
-                lease_num = int(lease_num_from_rank)
-                self.logger.info(f"  ✓ 从排行榜数据获取在租数量: {lease_num}人")
-            else:
-                # 如果排行榜数据中没有，尝试调用详情接口
-                self.logger.debug(f"  📡 排行榜数据中无在租数量，尝试调用详情接口...")
-                
-                # 在调用详情接口之前，确保IP已绑定（如果距离上次绑定超过30秒，重新绑定）
-                now = time.time()
-                if self.last_bind_time == 0 or (now - self.last_bind_time) > 30:
-                    self.logger.debug(f"距离上次绑定已超过30秒，重新绑定IP以确保详情接口可用...")
-                    self.bind_local_ip(force=True)
-                    time.sleep(1)  # 等待绑定生效
-                
-                details = self.get_item_details(good_id)
-                
-                if details:
-                    # 成功获取详情
-                    consecutive_401_errors = 0  # 重置错误计数
-                    lease_num = int(details.get('yyyp_lease_num', 0) or 0)
-                    sell_num = int(details.get('yyyp_sell_num', 0) or sell_num)
-                    daily_rent = float(details.get('yyyp_lease_price', 0) or daily_rent)
-                    self.logger.info(f"  ✓ 从详情接口获取数据: 在租={lease_num}人 | 在售={sell_num}人 | 日租={daily_rent:.2f}元")
-                else:
-                    # 详情接口失败，尝试使用chart接口作为备用
-                    self.logger.debug(f"  📡 详情接口失败，尝试使用chart接口获取在租数量...")
-                    lease_num_from_chart = self.get_lease_num_from_chart(good_id)
-                    
-                    if lease_num_from_chart is not None:
-                        lease_num = lease_num_from_chart
-                        consecutive_401_errors = 0
-                        self.logger.info(f"  ✓ 从chart接口获取在租数量: {lease_num}人 (当前值, 来自7天数据的最新值)")
-                    else:
-                        # 所有方法都失败
-                        self.logger.warning(f"  ❌ [淘汰] {name}: 无法获取在租数量（详情接口和chart接口均失败），宁缺毋滥 -> 跳过")
-                        consecutive_401_errors += 1
-                        time.sleep(0.5)
-                        continue
 
             # 2. "僵尸盘"熔断（核心诉求：拒绝"2人租"惨案）
-            # 注意：由于 filter 已经过滤了，这个检查主要是双重验证
             if lease_num < self.MIN_LEASE_COUNT:
                 self.logger.info(f"  ❌ [淘汰] {name}: 在租人数不足 ({lease_num}人 < {self.MIN_LEASE_COUNT}人)")
                 time.sleep(0.3)
@@ -831,11 +774,7 @@ class CSQAQScanner:
             else:
                 self.logger.debug(f"  ✓ 在租人数检查通过: {lease_num}人")
 
-            # 3. "甚至不够电费"熔断（拒绝"几毛钱"生意）
-            # 注意：这个检查已经在上面进行了，这里可以删除（但保留作为双重验证）
-            # 实际上，由于 filter 已经过滤了日租金，这个检查主要是双重验证
-
-            # 4. "供过于求"熔断（出租率计算）
+            # 3. "供过于求"熔断（出租率计算）
             # 如果卖的人有500个，租的人只有30个，出租率 6%，很难轮到你
             # 注意：在租数量和在售数量都是当前值（实时数据），时间范围一致
             if sell_num > 0:
@@ -866,11 +805,16 @@ class CSQAQScanner:
                 self.logger.debug(f"  ✓ 租金稳定性检查通过: {volatility:.1%} (时间范围: 90天)")
 
             # === 通过所有测试 ===
-            yyyp_lease_annual = item.get("yyyp_lease_annual", 0)
-            roi = float(yyyp_lease_annual) / 100.0
-            yyyp_sell_price = float(item.get('yyyp_sell_price', 0))
-            buff_sell_price = float(item.get('buff_sell_price', 0))
-            buy_limit = round(yyyp_sell_price * 0.92, 2)  # 建议92折求购
+            # 使用详情接口的数据（更准确），如果详情接口没有，则使用排行榜数据
+            yyyp_lease_annual = float(details.get('yyyp_lease_annual', 0) or item.get("yyyp_lease_annual", 0) or 0)
+            roi = yyyp_lease_annual / 100.0
+            # yyyp_sell_price 已经在上面从详情接口获取了
+            buff_sell_price = float(details.get('buff_sell_price', 0) or item.get('buff_sell_price', 0) or 0)
+            # 推荐求购价：如果详情接口有求购价，使用求购价+1元；否则使用在售价的92折
+            if yyyp_buy_price > 0:
+                buy_limit = round(yyyp_buy_price + 1.0, 2)  # 比当前最高求购价多1元
+            else:
+                buy_limit = round(yyyp_sell_price * 0.92, 2)  # 建议92折求购
             
             # 判断资产类型
             is_heavy = any(x in name for x in ["★", "手套", "匕首", "刀", "蝴蝶", "爪子", "M9", "刺刀"])
@@ -970,7 +914,7 @@ class CSQAQScanner:
                     lease_num = item.get('lease_num', 0)
                     lease_ratio = item.get('lease_ratio', 0) * 100
                     buy_limit = item.get('buy_limit', 0)
-                    self.logger.info(f"   类型: {asset_type} | ROI: {roi_percent:.1f}% | "
+                    self.logger.info(f"   类型: {asset_type} | 年化率: {roi_percent:.1f}% | "
                                    f"日租: {daily_rent:.2f}元 | 在租: {lease_num}人 | "
                                    f"出租率: {lease_ratio:.1f}% | 推荐求购价: {buy_limit:.2f}元")
                 self.logger.info("=" * 60)

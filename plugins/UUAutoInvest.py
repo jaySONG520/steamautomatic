@@ -1,9 +1,17 @@
 import json
 import os
-import re
+import sys
 import time
-import random  # 新增：用于随机延迟，模拟人类行为
+import random  # 用于随机延迟，模拟人类行为
 from datetime import datetime, timedelta
+
+# 添加项目根目录到 Python 路径（用于独立运行）
+if __name__ == "__main__":
+    # 获取当前文件所在目录的父目录（项目根目录）
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(current_dir)
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
 
 import json5
 import requests
@@ -29,6 +37,12 @@ class UUAutoInvest:
         self.uuyoupin = None
         # API session（用于保持 cookie）
         self._api_session = None
+        # 求购价缓存：{templateId: {"max_price": float, "sell_price": float, "good_id": int, "update_time": timestamp}}
+        self._purchase_price_cache = {}
+        self._cache_duration = 20 * 60  # 20分钟缓存
+        # CSQAQ API 配置
+        self._csqaq_api_token = None
+        self._csqaq_base_url = "https://api.csqaq.com/api/v1"
 
     def init(self) -> bool:
         """初始化插件"""
@@ -51,85 +65,55 @@ class UUAutoInvest:
 
     def fetch_candidates_from_whitelist(self):
         """
-        从选品器生成的白名单读取候选饰品列表
-        支持两种格式：
-        1. Scanner.py 生成的 whitelist.json（简化格式，直接是数组）
-        2. Hunter.py 生成的 invest_whitelist.json（完整格式，包含 metadata）
+        从 Scanner.py 生成的白名单读取候选饰品列表
+        白名单文件：config/whitelist.json
         """
         candidates = []
+        whitelist_file = "config/whitelist.json"
         
-        # 优先级：Scanner.py 的 whitelist.json > Hunter.py 的 invest_whitelist.json
-        scanner_whitelist = "config/whitelist.json"
-        hunter_whitelist = "config/invest_whitelist.json"
-        
-        whitelist_file = None
-        if os.path.exists(scanner_whitelist):
-            whitelist_file = scanner_whitelist
-            self.logger.info("检测到 Scanner.py 生成的白名单，优先使用")
-        elif os.path.exists(hunter_whitelist):
-            whitelist_file = hunter_whitelist
-            self.logger.info("检测到 Hunter.py 生成的白名单")
-        else:
-            self.logger.debug("未找到白名单文件，请先运行 Scanner.py 或 Hunter.py")
+        if not os.path.exists(whitelist_file):
+            self.logger.warning(f"未找到白名单文件: {whitelist_file}")
+            self.logger.info("请先运行 Scanner.py 生成白名单")
             return []
 
         try:
             with open(whitelist_file, "r", encoding="utf-8") as f:
                 whitelist_data = json5.load(f)
 
-            items = []
-            generated_at = "未知时间"
-            
-            # 判断格式：如果是数组，说明是 Scanner.py 生成的简化格式
-            if isinstance(whitelist_data, list):
-                items = whitelist_data
-                self.logger.info(f"从 Scanner 白名单读取候选饰品（共 {len(items)} 个）")
-            # 如果是字典，说明是 Hunter.py 生成的完整格式
-            elif isinstance(whitelist_data, dict):
-                items = whitelist_data.get("items", [])
-                generated_at = whitelist_data.get("generated_at", "未知时间")
-                self.logger.info(f"从 Hunter 白名单读取候选饰品（生成时间: {generated_at}，共 {len(items)} 个）")
-            else:
-                self.logger.warning("白名单文件格式错误")
+            # Scanner.py 生成的是数组格式
+            if not isinstance(whitelist_data, list):
+                self.logger.warning("白名单文件格式错误，应为数组格式")
                 return []
 
-            if not items:
+            if not whitelist_data:
                 self.logger.warning("白名单为空")
                 return []
 
-            for item in items:
-                # 兼容两种格式的字段名
-                template_id = str(item.get("templateId") or item.get("id", ""))
-                good_id = item.get("good_id") or template_id
+            self.logger.info(f"从白名单读取候选饰品（共 {len(whitelist_data)} 个）")
+
+            for item in whitelist_data:
+                template_id = str(item.get("templateId", ""))
                 name = item.get("name", "未知")
-                
-                # Scanner.py 使用 buy_limit，Hunter.py 使用 target_buy_price
-                target_price = item.get("buy_limit") or item.get("target_buy_price", 0)
+                buy_limit = item.get("buy_limit", 0)  # Scanner.py 推荐的求购价
                 yyyp_sell_price = item.get("yyyp_sell_price", 0)
                 roi = item.get("roi", 0)
-                stability_score = item.get("stability_score", 0)
-                volatility = item.get("volatility", 0)
 
                 if not template_id:
                     continue
                 
                 # 如果没有推荐价格，使用市场价的92%作为默认值
-                if target_price <= 0 and yyyp_sell_price > 0:
-                    target_price = round(yyyp_sell_price * 0.92, 2)
+                if buy_limit <= 0 and yyyp_sell_price > 0:
+                    buy_limit = round(yyyp_sell_price * 0.92, 2)
 
-                if target_price <= 0:
+                if buy_limit <= 0:
                     continue
 
                 candidates.append({
                     "templateId": template_id,
-                    "good_id": good_id,
                     "name": name,
                     "market_price": yyyp_sell_price,
-                    "target_buy_price": target_price,  # 选品器推荐的求购价
+                    "target_buy_price": buy_limit,  # Scanner 推荐的求购价
                     "roi": roi,
-                    "stability_score": stability_score,
-                    "volatility": volatility,
-                    "from_whitelist": True,  # 标记来自白名单
                 })
 
             self.logger.info(f"从白名单读取到 {len(candidates)} 个优质候选饰品")
@@ -140,392 +124,25 @@ class UUAutoInvest:
             self.logger.error(f"读取白名单文件失败: {e}")
             return []
 
-    def fetch_candidates_from_file(self):
-        """
-        从本地文件读取候选饰品列表（兼容旧格式）
-        用户需要手动从第三方网站（如 csqaq.com/rank）获取数据并保存为 JSON 文件
-        """
-        candidates = []
-        config_folder = "config"
-        candidates_file = os.path.join(config_folder, "invest_candidates.json")
-
-        if not os.path.exists(candidates_file):
-            self.logger.debug(f"未找到候选饰品文件: {candidates_file}")
-            return []
-
-        try:
-            with open(candidates_file, "r", encoding="utf-8") as f:
-                data = json5.load(f)
-
-            invest_config = self.config.get("uu_auto_invest", {})
-            min_price = invest_config.get("min_price", 100)
-            max_price = invest_config.get("max_price", 2000)
-            min_roi = invest_config.get("min_roi", 0.25)  # 25% 年化收益率
-
-            # 解析数据（根据实际 JSON 结构调整）
-            # 假设数据结构是 list，每个 item 有 templateId, price, rent 等字段
-            data_list = data if isinstance(data, list) else data.get("list", [])
-
-            for item in data_list:
-                # 根据实际 JSON 结构调整字段名
-                t_id = item.get("templateId") or item.get("template_id") or item.get("id")
-                price = float(item.get("price", 0) or item.get("market_price", 0))
-                rent = float(item.get("rent", 0) or item.get("daily_rent", 0) or item.get("rent_price", 0))
-                name = item.get("name") or item.get("commodity_name") or "未知"
-
-                if not t_id or price <= 0 or rent <= 0:
-                    continue
-
-                # 价格区间筛选
-                if not (min_price <= price <= max_price):
-                    continue
-
-                # 计算年化收益率 (日租金 * 365 / 价格)
-                roi = (rent * 365) / price if price > 0 else 0
-                if roi >= min_roi:
-                    candidates.append({
-                        "templateId": str(t_id),
-                        "name": name,
-                        "market_price": price,
-                        "daily_rent": rent,
-                        "roi": roi,
-                    })
-
-            self.logger.info(f"从文件筛选出 {len(candidates)} 个符合年化 > {min_roi*100}% 的候选饰品")
-            return candidates
-
-        except Exception as e:
-            handle_caught_exception(e, "UUAutoInvest")
-            self.logger.error(f"读取候选饰品文件失败: {e}")
-            return []
-
-    def _get_api_token(self):
-        """
-        获取 CSQAQ API Token
-        优先从配置中读取，如果没有则返回 None
-        """
-        invest_config = self.config.get("uu_auto_invest", {})
-        api_token = invest_config.get("csqaq_api_token", "")
-        
-        if api_token:
-            return api_token
-        
-        # 如果配置中没有，尝试从旧的 authorization 配置中读取（兼容旧配置）
-        old_auth = invest_config.get("csqaq_authorization", "")
-        if old_auth:
-            self.logger.info("检测到旧的 csqaq_authorization 配置，将使用它作为 ApiToken")
-            return old_auth
-        
-        return None
-
-    def _get_authorization_auto(self):
-        """
-        自动获取 csqaq.com 的 Authorization
-        策略：先访问页面建立 session，然后尝试不带 Authorization 的请求
-        如果失败，尝试从页面 JavaScript 中提取
-        """
-        try:
-            self.logger.info("正在自动获取 Authorization...")
-            
-            # 创建 session 以保持 cookie
-            session = requests.Session()
-            session.headers.update({
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-                "Referer": "https://csqaq.com/",
-            })
-            
-            # 方法1: 先访问 rank 页面建立 session
-            rank_url = "https://csqaq.com/rank"
-            resp = session.get(rank_url, timeout=10)
-            resp.raise_for_status()
-            
-            # 方法2: 尝试从页面 HTML/JavaScript 中提取 Authorization
-            html_content = resp.text
-            
-            # 查找可能的 Authorization 模式（可能在 JavaScript 变量或配置中）
-            auth_patterns = [
-                r'Authorization["\']?\s*[:=]\s*["\']([^"\']{30,})["\']',  # 至少30个字符
-                r'authorization["\']?\s*[:=]\s*["\']([^"\']{30,})["\']',
-                r'["\']Authorization["\']:\s*["\']([^"\']{30,})["\']',
-                r'auth["\']?\s*[:=]\s*["\']([^"\']{30,})["\']',
-                r'token["\']?\s*[:=]\s*["\']([^"\']{30,})["\']',
-            ]
-            
-            for pattern in auth_patterns:
-                matches = re.findall(pattern, html_content, re.IGNORECASE)
-                if matches:
-                    auth = matches[0].strip()
-                    # 验证格式（通常包含字母数字和连字符）
-                    if re.match(r'^[a-zA-Z0-9\-_]+$', auth) and len(auth) > 30:
-                        self.logger.info(f"从页面中提取到 Authorization（长度: {len(auth)}）")
-                        return auth
-            
-            # 方法3: 尝试不带 Authorization 直接调用 API（可能只需要 cookie）
-            test_api_url = "https://csqaq.com/proxies/api/v1/info/get_rank_list"
-            test_headers = {
-                "Content-Type": "application/json;charset=UTF-8",
-                "Origin": "https://csqaq.com",
-                "Referer": "https://csqaq.com/rank",
-            }
-            test_data = {"page_index": 1, "page_size": 1}
-            
-            test_resp = session.post(test_api_url, headers=test_headers, json=test_data, timeout=10)
-            
-            # 如果请求成功，说明不需要 Authorization（可能只需要 cookie）
-            if test_resp.status_code == 200:
-                try:
-                    result = test_resp.json()
-                    if result.get("code") == 200:
-                        self.logger.info("API 请求成功，可能不需要 Authorization（使用 session cookie）")
-                        # 保存 session 供后续使用
-                        self._api_session = session
-                        return ""  # 返回空字符串，表示不需要 Authorization
-                except:
-                    pass
-            
-            # 如果都失败，返回 None
-            self.logger.warning("无法自动获取 Authorization，建议手动配置或使用文件模式")
-            return None
-            
-        except Exception as e:
-            self.logger.error(f"自动获取 Authorization 失败: {e}")
-            return None
-
-    def fetch_candidates_from_api(self):
-        """
-        从 CSQAQ 官方 API 获取候选饰品列表
-        使用官方 API: https://api.csqaq.com/api/v1
-        """
-        candidates = []
-        invest_config = self.config.get("uu_auto_invest", {})
-        
-        # 使用官方 API 地址
-        api_url = "https://api.csqaq.com/api/v1/info/get_rank_list"
-        
-        # 获取 API Token
-        api_token = self._get_api_token()
-        
-        if not api_token:
-            self.logger.warning("未配置 csqaq_api_token，无法使用API获取数据")
-            self.logger.info("请在 config.json5 中配置 csqaq_api_token（从 csqaq.com 用户中心获取）")
-            return []
-
-        try:
-            # 创建 session
-            session = requests.Session()
-            
-            # 使用官方 API 的认证方式：ApiToken Header
-            headers = {
-                "Content-Type": "application/json;charset=UTF-8",
-                "ApiToken": api_token,  # 官方 API 使用 ApiToken 而不是 Authorization
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            }
-
-            # 构建请求体（根据官方 API 文档）
-            # filter 参数需要参考详细文档，这里使用基本筛选
-            page_size = min(invest_config.get("api_page_size", 100), 500)  # 增加每页数量，最大500
-            request_data = {
-                "page_index": 1,
-                "page_size": page_size,
-                "search": "",
-                "filter": {
-                    # 根据官方文档，filter 参数较多，这里使用基本筛选
-                    # 详细参数请参考：http://docs.csqaq.com/doc-4619235
-                    "排序": ["租赁_短租收益率(年化)"],  # 按年化收益率排序
-                    # 添加价格筛选，减少无效数据
-                    "价格最低价": invest_config.get("min_price", 100),
-                    "价格最高价": invest_config.get("max_price", 2000),
-                    # 添加在售数量筛选
-                    "在售最少": invest_config.get("min_on_sale", 50),  # 降低到20，让API先过滤
-                },
-                "show_recently_price": invest_config.get("show_recently_price", False)
-            }
-
-            self.logger.info("正在从 CSQAQ 官方 API 获取候选饰品列表...")
-            
-            # 遵守频率限制：1次/秒
-            time.sleep(1)
-            
-            resp = session.post(api_url, headers=headers, json=request_data, timeout=15)
-            
-            # 先检查HTTP状态码
-            if resp.status_code == 401:
-                self.logger.error("API返回401未授权错误，可能的原因：")
-                self.logger.error("1. csqaq_api_token 配置错误或已过期")
-                self.logger.error("2. IP地址未绑定到API白名单（需要在 csqaq.com 用户中心绑定IP）")
-                self.logger.error("3. 请检查 config.json5 中的 csqaq_api_token 是否正确")
-                try:
-                    error_detail = resp.json()
-                    self.logger.debug(f"API错误详情: {error_detail}")
-                except:
-                    self.logger.debug(f"HTTP响应内容: {resp.text[:200]}")
-                return []
-            
-            # 检查其他HTTP错误
-            if resp.status_code != 200:
-                self.logger.error(f"API请求失败: HTTP {resp.status_code} - {resp.reason}")
-                try:
-                    error_detail = resp.json()
-                    self.logger.debug(f"API错误详情: {error_detail}")
-                except:
-                    self.logger.debug(f"HTTP响应内容: {resp.text[:200]}")
-                return []
-            
-            result = resp.json()
-            
-            self.logger.info("API请求成功")
-
-            # 检查返回码（官方 API 状态码）
-            code = result.get("code")
-            if code not in [200, 201]:  # 2xx 表示成功
-                msg = result.get("msg", "未知错误")
-                if code == 400:
-                    self.logger.error(f"API返回错误: 用户不存在或Token验证未通过 (code: {code})")
-                elif code == 401:
-                    self.logger.error(f"API返回错误: Token验证未通过，请检查 csqaq_api_token 是否正确 (code: {code})")
-                    self.logger.error("提示：请确保已在 csqaq.com 用户中心绑定IP白名单")
-                elif code == 429:
-                    self.logger.error(f"API返回错误: 请求过于频繁，请稍后再试 (code: {code})")
-                elif code == 503:
-                    self.logger.error(f"API返回错误: 网关异常或请求频繁 (code: {code})")
-                else:
-                    self.logger.error(f"API返回错误: {msg} (code: {code})")
-                return []
-
-            data_list = result.get("data", {}).get("data", [])
-            if not data_list:
-                self.logger.warning("API返回数据为空")
-                return []
-
-            self.logger.info(f"API返回了 {len(data_list)} 条数据，开始筛选...")
-            # 打印前3条数据用于调试
-            if data_list:
-                self.logger.debug(f"前3条数据示例: {json.dumps(data_list[:3], ensure_ascii=False, indent=2)}")
-
-            # 筛选条件
-            min_price = invest_config.get("min_price", 100)
-            max_price = invest_config.get("max_price", 2000)
-            min_roi = invest_config.get("min_roi", 0.25)  # 25% 年化收益率
-            min_on_sale = invest_config.get("min_on_sale", 50)
-
-            # 由于API返回的数据是按年化收益率降序排列的，如果当前项已经低于min_roi，后续的肯定也低于
-            # 可以提前停止处理，提高效率
-            early_stop = False
-            
-            for item in data_list:
-                # 如果已经遇到年化收益率低于阈值的项，提前停止（因为数据是按年化收益率降序排列的）
-                if early_stop:
-                    break
-                
-                # 解析官方 API 返回的数据（根据文档）
-                item_id = item.get("id")
-                name = item.get("name", "未知")
-                
-                # 悠悠有品售价（API返回的是小数，单位：元）
-                yyyp_sell_price = float(item.get("yyyp_sell_price", 0))
-                
-                # 悠悠有品求购价
-                yyyp_buy_price = float(item.get("yyyp_buy_price", 0))
-                
-                # 悠悠有品短租价格（日租金）
-                yyyp_lease_price = float(item.get("yyyp_lease_price", 0))
-                
-                # 年化收益率（API直接返回，单位：百分比，如79.9表示79.9%）
-                yyyp_lease_annual = item.get("yyyp_lease_annual", 0)
-                if yyyp_lease_annual:
-                    # API返回的是百分比，转换为小数（79.9 -> 0.799）
-                    roi = float(yyyp_lease_annual) / 100.0
-                else:
-                    # 如果没有年化收益率，根据日租金计算
-                    price = yyyp_sell_price if yyyp_sell_price > 0 else yyyp_buy_price
-                    if yyyp_lease_price > 0 and price > 0:
-                        roi = (yyyp_lease_price * 365) / price
-                    else:
-                        roi = 0
-                
-                # 在售数量（根据文档字段名）
-                yyyp_sell_num = item.get("yyyp_sell_num", 0)
-                
-                # 使用售价作为价格参考
-                price = yyyp_sell_price if yyyp_sell_price > 0 else yyyp_buy_price
-
-                if not item_id:
-                    continue
-                
-                if price <= 0:
-                    self.logger.debug(f"跳过 {name}：价格为0 (售价:{yyyp_sell_price}, 求购价:{yyyp_buy_price})")
-                    continue
-
-                # 价格区间筛选
-                if not (min_price <= price <= max_price):
-                    self.logger.debug(f"跳过 {name}：价格 {price:.2f} 不在区间 [{min_price}, {max_price}]")
-                    continue
-
-                # 年化收益率筛选（如果低于阈值，标记提前停止）
-                if roi < min_roi:
-                    self.logger.debug(
-                        f"跳过 {name}：年化收益率 {roi*100:.1f}% < {min_roi*100}% "
-                        f"(API返回:{yyyp_lease_annual}%, 日租金:{yyyp_lease_price:.2f}, 售价:{price:.2f})"
-                    )
-                    # 由于数据是按年化收益率降序排列的，后续数据肯定也低于阈值，提前停止
-                    early_stop = True
-                    self.logger.info(f"年化收益率已低于 {min_roi*100}%，提前停止处理后续数据")
-                    break
-
-                # 在售数量筛选（确保有足够的流动性）
-                if yyyp_sell_num < min_on_sale:
-                    self.logger.debug(f"跳过 {name}：在售数量 {yyyp_sell_num} < {min_on_sale}")
-                    continue
-
-                self.logger.info(
-                    f"找到候选饰品: {name}, 价格: {price:.2f}, "
-                    f"日租金: {yyyp_lease_price:.2f}, 年化: {roi*100:.1f}% (API:{yyyp_lease_annual}%), 在售: {yyyp_sell_num}"
-                )
-
-                candidates.append({
-                    "templateId": str(item_id),
-                    "name": name,
-                    "market_price": price,
-                    "yyyp_sell_price": yyyp_sell_price,
-                    "yyyp_buy_price": yyyp_buy_price,
-                    "yyyp_lease_price": yyyp_lease_price,
-                    "roi": roi,
-                    "yyyp_sell_num": yyyp_sell_num,
-                })
-
-            self.logger.info(f"从API筛选出 {len(candidates)} 个符合年化 > {min_roi*100}% 的候选饰品")
-            return candidates
-
-        except requests.exceptions.RequestException as e:
-            self.logger.error(f"API请求失败: {e}")
-            return []
-        except Exception as e:
-            handle_caught_exception(e, "UUAutoInvest")
-            self.logger.error(f"解析API响应失败: {e}")
-            return []
 
     def get_item_details_from_uu(self, template_id):
         """
-        从悠悠有品获取饰品的详细信息（用于挂求购单）
+        从悠悠有品获取饰品的详细信息（仅用于获取 marketHashName，不依赖价格）
         返回: (detail_dict, is_system_busy)
         """
         try:
-            # 查询在售列表获取详情
+            # 查询在售列表获取详情（只需要 marketHashName）
             res = self.uuyoupin.get_market_sale_list_with_abrade(
                 int(template_id), pageIndex=1, pageSize=1
             )
             
             # 处理 HTTP 层面错误（429 Too Many Requests）
-            # call_api 返回的是 requests.Response 对象
             if isinstance(res, requests.Response):
                 if res.status_code == 429:
                     self.logger.warning("HTTP 429: 请求过于频繁")
                     return None, True  # True 表示系统繁忙
                 market_data = res.json()
             else:
-                # 如果不是 Response 对象，尝试直接作为 JSON 处理（兼容性）
                 market_data = res if isinstance(res, dict) else res.json()
 
             # 兼容大小写：Code 或 code
@@ -535,13 +152,13 @@ class UUAutoInvest:
             
             msg = market_data.get("Msg") or market_data.get("msg", "未知错误")
             
-            # 判定系统繁忙的条件（更精准的识别）
+            # 判定系统繁忙的条件
             is_busy = (
-                code == 84104 or  # 悠悠有品特定的频繁请求错误码
-                code == 429 or    # HTTP 429
+                code == 84104 or
+                code == 429 or
                 "频繁" in msg or 
                 "系统繁忙" in msg or
-                code == -1  # 系统繁忙时通常返回 -1
+                code == -1
             )
             
             if is_busy:
@@ -569,20 +186,162 @@ class UUAutoInvest:
                 return None, False
 
             detail = commodity_list[0]
-            # 兼容不同的字段名
-            commodity_name = detail.get("commodityName") or detail.get("CommodityName", "")
+            # 只获取 marketHashName（用于挂单），不依赖价格
             market_hash_name = detail.get("commodityHashName") or detail.get("MarketHashName", "")
-            price_str = detail.get("price") or detail.get("Price", "0")
+            
+            if not market_hash_name:
+                self.logger.warning(f"无法获取 marketHashName")
+                return None, False
             
             return {
-                "commodityName": commodity_name,
                 "marketHashName": market_hash_name,
-                "lowestPrice": float(price_str),
             }, False  # 成功时返回 False（不是系统繁忙）
 
         except Exception as e:
             self.logger.error(f"获取饰品 {template_id} 详情失败: {e}")
             return None
+
+    def _get_csqaq_api_token(self):
+        """获取 CSQAQ API Token"""
+        if self._csqaq_api_token:
+            return self._csqaq_api_token
+        
+        invest_config = self.config.get("uu_auto_invest", {})
+        self._csqaq_api_token = invest_config.get("csqaq_api_token", "")
+        return self._csqaq_api_token
+
+
+    def _get_optimal_purchase_price(self, template_id, item_name, recommended_price, market_price):
+        """
+        获取最优求购价：使用 CSQAQ API 的 chart 接口获取求购价和在售价
+        20分钟缓存一次，求购价不能大于在售价
+        :param template_id: 模板ID
+        :param item_name: 商品名称（用于日志）
+        :param recommended_price: 白名单推荐价格（备用）
+        :param market_price: 市场价（用于验证）
+        :return: 最优求购价（如果无法获取或求购价>在售价，返回0）
+        """
+        template_id_str = str(template_id)
+        current_time = time.time()
+        
+        # 检查缓存是否有效
+        cache_valid = False
+        if template_id_str in self._purchase_price_cache:
+            cache_data = self._purchase_price_cache[template_id_str]
+            if current_time - cache_data.get("update_time", 0) < self._cache_duration:
+                cache_valid = True
+                max_purchase_price = cache_data.get("max_price", 0)
+                sell_price = cache_data.get("sell_price", 0)
+                self.logger.debug(f"{item_name} 使用缓存数据: 求购价={max_purchase_price:.2f}元, 在售价={sell_price:.2f}元")
+        
+        # 如果缓存无效，从 CSQAQ API 获取
+        if not cache_valid:
+            try:
+                # templateId 就是 CSQAQ 的 good_id
+                good_id = int(template_id)
+                
+                self.logger.info(f"{item_name} 正在从 CSQAQ API 获取求购价和在售价...")
+                api_token = self._get_csqaq_api_token()
+                if not api_token:
+                    self.logger.warning(f"{item_name} 未配置 CSQAQ API Token，使用推荐价格")
+                    if recommended_price > 0:
+                        optimal_price = recommended_price
+                    else:
+                        optimal_price = round(market_price * 0.92, 2)
+                    # 更新缓存
+                    self._purchase_price_cache[template_id_str] = {
+                        "max_price": optimal_price,
+                        "sell_price": market_price,
+                        "update_time": current_time
+                    }
+                    return optimal_price
+                
+                # 使用 /api/v1/info/good 接口获取实时求购价和在售价（比 chart 接口更准确）
+                good_url = f"{self._csqaq_base_url}/info/good"
+                headers = {
+                    "ApiToken": api_token
+                }
+                params = {"id": good_id}
+                
+                time.sleep(0.5)  # 遵守频率限制
+                resp = requests.get(good_url, headers=headers, params=params, timeout=10)
+                
+                # 解析响应
+                max_purchase_price = 0
+                sell_price = 0
+                buy_num = 0
+                sell_num = 0
+                
+                if resp.status_code == 200:
+                    result = resp.json()
+                    if result.get("code") == 200:
+                        goods_info = result.get("data", {}).get("goods_info", {})
+                        if goods_info:
+                            # 直接从 goods_info 获取实时求购价和在售价
+                            max_purchase_price = float(goods_info.get("yyyp_buy_price", 0) or 0)
+                            sell_price = float(goods_info.get("yyyp_sell_price", 0) or 0)
+                            buy_num = int(goods_info.get("yyyp_buy_num", 0) or 0)
+                            sell_num = int(goods_info.get("yyyp_sell_num", 0) or 0)
+                            
+                            self.logger.debug(f"{item_name} CSQAQ API 返回: 求购价={max_purchase_price:.2f}元 (求购数={buy_num}), 在售价={sell_price:.2f}元 (在售数={sell_num})")
+                        else:
+                            self.logger.warning(f"{item_name} CSQAQ API 返回数据中无 goods_info")
+                    else:
+                        self.logger.warning(f"{item_name} CSQAQ API 返回错误: code={result.get('code')}, msg={result.get('msg')}")
+                else:
+                    self.logger.warning(f"{item_name} CSQAQ API 请求失败: HTTP {resp.status_code}")
+                
+                # 如果无法获取数据，使用推荐价格
+                if max_purchase_price <= 0:
+                    self.logger.warning(f"{item_name} 无法从 CSQAQ API 获取求购价，使用推荐价格")
+                    if recommended_price > 0:
+                        max_purchase_price = recommended_price
+                    else:
+                        max_purchase_price = round(market_price * 0.92, 2)
+                
+                if sell_price <= 0:
+                    sell_price = market_price  # 使用传入的市场价作为备用
+                
+                # 更新缓存
+                self._purchase_price_cache[template_id_str] = {
+                    "max_price": max_purchase_price,
+                    "sell_price": sell_price,
+                    "update_time": current_time
+                }
+                
+                self.logger.info(f"{item_name} 从 CSQAQ API 获取: 求购价={max_purchase_price:.2f}元 (求购数={buy_num}), 在售价={sell_price:.2f}元 (在售数={sell_num})（已缓存，20分钟内有效）")
+                
+            except Exception as e:
+                self.logger.error(f"{item_name} 获取求购价异常: {e}，使用推荐价格")
+                if recommended_price > 0:
+                    max_purchase_price = recommended_price
+                else:
+                    max_purchase_price = round(market_price * 0.92, 2)
+                sell_price = market_price
+                # 即使异常也更新缓存，避免频繁请求
+                self._purchase_price_cache[template_id_str] = {
+                    "max_price": max_purchase_price,
+                    "sell_price": sell_price,
+                    "update_time": current_time
+                }
+        else:
+            max_purchase_price = self._purchase_price_cache[template_id_str]["max_price"]
+            sell_price = self._purchase_price_cache[template_id_str].get("sell_price", market_price)
+        
+        # 比最高求购价多1元
+        optimal_price = round(max_purchase_price + 1.0, 2)
+        
+        # 关键逻辑：求购价不能大于在售价
+        if optimal_price > sell_price:
+            self.logger.warning(f"{item_name} 计算出的求购价 {optimal_price:.2f}元 > 在售价 {sell_price:.2f}元，调整为在售价-0.01元")
+            optimal_price = round(sell_price - 0.01, 2)
+            if optimal_price <= 0:
+                self.logger.error(f"{item_name} 调整后的求购价无效 ({optimal_price:.2f}元)，返回0")
+                return 0
+        
+        self.logger.info(f"{item_name} 最优求购价: {optimal_price:.2f}元 (最高求购价: {max_purchase_price:.2f}元 + 1元, 在售价: {sell_price:.2f}元)")
+        
+        return optimal_price
 
     def execute_investment(self):
         """执行自动投资任务（狙击模式）"""
@@ -613,44 +372,21 @@ class UUAutoInvest:
             self.logger.error(f"获取余额失败: {e}")
             return
 
-        # 2. 获取候选名单（优先级：白名单 > API > 文件）
-        candidates = []
-        use_whitelist = invest_config.get("use_whitelist", True)  # 默认优先使用白名单
-        use_api = invest_config.get("use_api", True)
-        
-        # 优先使用选品器生成的白名单（Scanner.py 或 Hunter.py）
-        if use_whitelist:
-            self.logger.info("正在从白名单读取候选饰品（Scanner/Hunter 智能选品）...")
-            candidates = self.fetch_candidates_from_whitelist()
-        
-        # 如果白名单为空，尝试使用 API
-        if not candidates and use_api:
-            self.logger.info("白名单为空，正在使用API方式获取候选饰品...")
-            candidates = self.fetch_candidates_from_api()
-            # 如果API获取失败，尝试使用文件
-            if not candidates:
-                self.logger.info("API获取失败，尝试从文件读取...")
-                candidates = self.fetch_candidates_from_file()
-        elif not candidates:
-            # 如果禁用白名单且禁用API，使用文件
-            self.logger.info("正在使用文件方式获取候选饰品...")
-            candidates = self.fetch_candidates_from_file()
+        # 2. 从白名单获取候选名单（仅使用白名单模式）
+        self.logger.info("正在从白名单读取候选饰品（Scanner 智能选品）...")
+        candidates = self.fetch_candidates_from_whitelist()
 
         if not candidates:
-            self.logger.warning("未找到符合条件的候选饰品")
+            self.logger.warning("未找到候选饰品，请先运行 Scanner.py 生成白名单")
             return
         
-        # === 核心改动1：打乱顺序（避免每次都从第1个开始）===
-        # 避免每次都从第1个开始请求，防止死磕同一个坏数据
+        # 打乱顺序（避免每次都从第1个开始）
         random.shuffle(candidates)
         
-        # 如果使用白名单，每次运行只尝试前3个，防止频率限制
-        if candidates and candidates[0].get("from_whitelist"):
-            max_try = invest_config.get("max_whitelist_try", 3)  # 每次最多尝试3个白名单饰品
-            candidates = candidates[:max_try]
-            self.logger.info(f">>> 从白名单获取到 {len(candidates)} 个候选饰品，已随机打乱顺序（狙击模式，每次最多尝试 {max_try} 个）<<<")
-        else:
-            self.logger.info(f">>> 获取到 {len(candidates)} 个候选饰品，已随机打乱顺序（狙击模式）<<<")
+        # 每次运行只尝试前N个，防止频率限制
+        max_try = invest_config.get("max_whitelist_try", 3)  # 每次最多尝试3个白名单饰品
+        candidates = candidates[:max_try]
+        self.logger.info(f">>> 从白名单获取到 {len(candidates)} 个候选饰品，已随机打乱顺序（狙击模式，每次最多尝试 {max_try} 个）<<<")
 
         # 3. 遍历并执行购买策略（狙击模式）
         invest_config = self.config.get("uu_auto_invest", {})
@@ -707,34 +443,24 @@ class UUAutoInvest:
                     self.logger.debug(f"无法获取 {item_name} 详情，跳过")
                     continue
 
-                commodity_name = detail["commodityName"]
+                # 使用白名单中的商品名称和价格
+                commodity_name = item_name  # 使用白名单中的名称
                 market_hash_name = detail["marketHashName"]
-                lowest_price = detail["lowestPrice"]
+                
+                # 直接使用白名单中的市场价（更准确）
+                lowest_price = item.get("market_price", 0)
+                if lowest_price <= 0:
+                    self.logger.warning(f"{item_name} 白名单中无市场价，跳过")
+                    continue
+                
+                self.logger.info(f"{item_name} 市场价: {lowest_price:.2f}元 (来自白名单)")
 
-                # 计算求购价：优先使用白名单推荐价格
-                if item.get("from_whitelist"):
-                    # 优先使用白名单推荐的求购价（Scanner/Hunter 已经经过严格筛选）
-                    buy_limit = item.get("buy_limit")  # Scanner.py 格式
-                    target_buy_price = item.get("target_buy_price")  # Hunter.py 格式
-                    recommended_price = buy_limit or target_buy_price
-                    
-                    if recommended_price and recommended_price > 0:
-                        target_price = recommended_price
-                        self.logger.info(f"{item_name} 使用白名单推荐求购价: {target_price:.2f} (市场价: {lowest_price:.2f})")
-                    else:
-                        # 如果白名单没有推荐价格，使用市场价的92%
-                        target_price = round(lowest_price * 0.92, 2)
-                        self.logger.info(f"{item_name} 使用默认求购价（市场价92%）: {target_price:.2f} (市场价: {lowest_price:.2f})")
-                else:
-                    # 否则使用配置的比例计算
-                    target_price = round(lowest_price * buy_price_ratio, 2)
-                    
-                    # 如果API提供了求购价参考，使用更保守的价格
-                    if "yyyp_buy_price" in item and item["yyyp_buy_price"] > 0:
-                        # 如果计算出的求购价高于API提供的求购价，使用API的求购价（更保守）
-                        if target_price > item["yyyp_buy_price"]:
-                            target_price = round(item["yyyp_buy_price"] * 0.98, 2)
-                            self.logger.debug(f"{item_name} 使用API求购价参考: {target_price:.2f}")
+                # 计算求购价：优先使用当前最高求购价+1元
+                target_price = self._get_optimal_purchase_price(template_id, item_name, item.get("target_buy_price", 0), lowest_price)
+                
+                if target_price <= 0:
+                    self.logger.warning(f"{item_name} 无法确定合适的求购价，跳过")
+                    continue
                 
                 # 验证求购价必须低于市场价
                 if target_price >= lowest_price:
@@ -757,7 +483,7 @@ class UUAutoInvest:
                 test_mode = invest_config.get("test_mode", False)
                 
                 try:
-                    self.logger.info(f"正在挂单 -> {commodity_name} | 价格: {target_price:.2f}, 市场价: {lowest_price:.2f}, 年化: {item['roi']*100:.1f}%")
+                    self.logger.info(f"正在挂单 -> {item_name} | 价格: {target_price:.2f}, 市场价: {lowest_price:.2f}, 年化: {item['roi']*100:.1f}%")
                     
                     # 如果是测试模式，不真挂单
                     if test_mode:
@@ -769,12 +495,12 @@ class UUAutoInvest:
                         time.sleep(60)
                         continue
                     
-                    # 实际挂单
-                    self.logger.info(f"发起挂单 -> {commodity_name} | 价格: {target_price:.2f}")
+                    # 实际挂单（使用白名单中的商品名称）
+                    self.logger.info(f"发起挂单 -> {item_name} | 价格: {target_price:.2f}")
                     res = self.uuyoupin.publish_purchase_order(
                         templateId=int(template_id),
                         templateHashName=market_hash_name,
-                        commodityName=commodity_name,
+                        commodityName=item_name,  # 使用白名单中的名称
                         purchasePrice=target_price,
                         purchaseNum=1
                     )
@@ -829,4 +555,91 @@ class UUAutoInvest:
                 break
             schedule.run_pending()
             time.sleep(60)  # 每分钟检查一次
+
+
+def main():
+    """主函数 - 独立运行（用于单体测试）"""
+    print("=" * 60)
+    print("UUAutoInvest 模块单体测试")
+    print("=" * 60)
+    print("提示：")
+    print("1. 确保 config.json5 中已配置 uu_auto_invest")
+    print("2. 确保 config/whitelist.json 存在（由 Scanner.py 生成）")
+    print("3. 确保 config/uu_token.txt 存在（悠悠有品登录 Token）")
+    print("=" * 60)
+    print()
+    
+    try:
+        # 加载配置
+        config_path = "config/config.json5"
+        if not os.path.exists(config_path):
+            print(f"❌ 配置文件不存在: {config_path}")
+            return
+        
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json5.load(f)
+        
+        # 检查白名单文件
+        whitelist_path = "config/whitelist.json"
+        if not os.path.exists(whitelist_path):
+            print(f"❌ 白名单文件不存在: {whitelist_path}")
+            print("请先运行 Scanner.py 生成白名单")
+            return
+        
+        # 检查 Token 文件
+        token_path = "config/uu_token.txt"
+        if not os.path.exists(token_path):
+            print(f"❌ Token 文件不存在: {token_path}")
+            print("请先登录悠悠有品并获取 Token")
+            return
+        
+        with open(token_path, "r", encoding="utf-8") as f:
+            token = f.read().strip()
+        
+        if not token:
+            print("❌ Token 文件为空")
+            return
+        
+        print(f"✅ 配置文件已加载")
+        print(f"✅ 白名单文件: {whitelist_path}")
+        print(f"✅ Token 文件: {token_path}")
+        print()
+        
+        # 创建插件实例（独立运行模式，不需要 steam_client）
+        # 注意：这里需要模拟一个 steam_client，但实际上只需要 uuyoupin
+        class MockSteamClient:
+            pass
+        
+        plugin = UUAutoInvest(MockSteamClient(), None, config)
+        
+        # 初始化 uuyoupin（使用文件中的 token）
+        try:
+            plugin.uuyoupin = uuyoupinapi.UUAccount(token)
+            print("✅ 悠悠有品账户初始化成功")
+        except Exception as e:
+            print(f"❌ 悠悠有品账户初始化失败: {e}")
+            return
+        
+        print()
+        print("开始执行投资任务...")
+        print()
+        
+        # 执行投资任务
+        plugin.execute_investment()
+        
+        print()
+        print("=" * 60)
+        print("测试完成")
+        print("=" * 60)
+        
+    except KeyboardInterrupt:
+        print("\n\n⚠️ 用户中断测试")
+    except Exception as e:
+        print(f"\n\n❌ 测试失败: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+if __name__ == "__main__":
+    main()
 
