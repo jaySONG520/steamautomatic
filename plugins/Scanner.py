@@ -116,23 +116,22 @@ class CSQAQScanner:
             self.logger.error(f"绑定IP异常: {e}")
             return False
 
-    def get_rank_list(self) -> List[dict]:
+    def get_rank_list(self, filter_payload: dict) -> List[dict]:
         """
-        海选：获取短租收益榜前100名
+        通用排行榜请求（支持不同筛选策略）
+        :param filter_payload: filter 字典
+        :return: 饰品列表
         """
         url = f"{self.base_url}/info/get_rank_list"
+        
         payload = {
             "page_index": 1,
-            "page_size": 100,
-            "filter": {
-                "排序": ["租赁_短租收益率(年化)"],
-                "价格最低价": self.MIN_PRICE,
-                "价格最高价": self.MAX_PRICE
-            }
+            "page_size": 200,
+            "show_recently_price": True,  # 获取近期价格数据，用于趋势分析
+            "filter": filter_payload
         }
 
         try:
-            self.logger.info("正在获取短租收益榜前100名...")
             time.sleep(1)  # 遵守频率限制
             
             resp = requests.post(url, json=payload, headers=self.headers, timeout=15)
@@ -155,7 +154,6 @@ class CSQAQScanner:
             
             data = result.get("data", {})
             items = data.get("data", [])
-            self.logger.info(f"获取到 {len(items)} 个候选饰品")
             return items
             
         except Exception as e:
@@ -192,18 +190,18 @@ class CSQAQScanner:
             self.logger.debug(f"获取饰品 {good_id} 详情失败: {e}")
             return None
 
-    def get_stability_score(self, good_id: int) -> float:
+    def get_lease_stability(self, good_id: int) -> float:
         """
-        终审：检查90天价格波动率
+        检查租金走势稳定性（通过短租价格 K 线）
         返回波动率（0-1之间，越小越稳定）
+        用于识别"虚假租金"（挂得高但没人租的情况）
         """
-        # 根据 CSQAQ API 文档，获取图表数据使用 /info/get_chart
         url = f"{self.base_url}/info/get_chart"
         payload = {
             "good_id": good_id,
-            "key": "sell_price",
+            "key": "short_lease_price",  # 检查短租价格走势
             "platform": 2,  # 悠悠有品平台
-            "period": 90,
+            "period": 30,  # 近30天
             "style": "all_style"
         }
 
@@ -224,13 +222,13 @@ class CSQAQScanner:
             data = result.get("data", {})
             # 根据实际 API 响应结构调整
             chart_data = data.get("chart_data") or data
-            prices = chart_data.get("main_data", [])
+            lease_prices = chart_data.get("main_data", [])
             
-            if not prices or len(prices) < 20:
+            if not lease_prices or len(lease_prices) < 10:
                 return 1.0  # 数据不足，认为不稳定
             
-            # 计算波动率: (最高-最低)/平均
-            prices_float = [float(p) for p in prices if p]
+            # 计算变异系数 (标准差/均值)
+            prices_float = [float(p) for p in lease_prices if p]
             if not prices_float:
                 return 1.0
             
@@ -238,11 +236,16 @@ class CSQAQScanner:
             if avg == 0:
                 return 1.0
             
-            volatility = (max(prices_float) - min(prices_float)) / avg
+            # 计算标准差
+            variance = sum((x - avg) ** 2 for x in prices_float) / len(prices_float)
+            std = variance ** 0.5
+            
+            # 变异系数 = 标准差 / 均值
+            volatility = std / avg
             return volatility
             
         except Exception as e:
-            self.logger.debug(f"获取饰品 {good_id} 稳定性数据失败: {e}")
+            self.logger.debug(f"获取饰品 {good_id} 租金稳定性数据失败: {e}")
             return 1.0  # 出错时返回最大值表示不稳定
 
     def run_scan(self) -> List[dict]:
@@ -251,19 +254,56 @@ class CSQAQScanner:
         :return: 白名单列表
         """
         self.logger.info("=" * 60)
-        self.logger.info("🔍 开始每日量化选品（三期过滤法）")
+        self.logger.info("🚀 [选品大脑] 启动双轨制全品类扫描模式（稳健型 + 高收益型）")
         self.logger.info("=" * 60)
 
-        # 第一步：海选
-        raw_list = self.get_rank_list()
+        # 从配置读取参数
+        invest_config = self.config.get("uu_auto_invest", {})
+        scanner_config = self.config.get("scanner", {})
+        
+        # --- 策略 A: 稳健型 (步枪/探员/微冲/手枪) ---
+        # 目标：不亏本金，稳定拿租
+        filter_steady = {
+            "排序": ["租赁_短租收益率(年化)"],
+            "类型": scanner_config.get("filter_types_steady", ["不限_步枪", "不限_手枪", "不限_微型冲锋枪", "不限_探员"]),
+            "价格最低价": self.MIN_PRICE,
+            "价格最高价": self.MAX_PRICE,
+            "短租收益最低": scanner_config.get("min_roi_steady", 20),  # 枪皮探员20%年化就很优质了
+            "在售最少": invest_config.get("min_on_sale", 50)
+        }
+        
+        # --- 策略 B: 高收益型 (匕首/手套) ---
+        # 目标：利用10.24更新后的高租金对冲本金阴跌
+        filter_aggressive = {
+            "排序": ["租赁_短租收益率(年化)"],
+            "类型": scanner_config.get("filter_types_aggressive", ["不限_匕首", "不限_手套"]),
+            "价格最低价": scanner_config.get("min_price_aggressive", 300),
+            "价格最高价": scanner_config.get("max_price_aggressive", 5000),  # 刀和手套稍微放宽预算
+            "短租收益最低": scanner_config.get("min_roi_aggressive", 35),  # 刀手套必须35%以上才值得博弈
+            "在售最少": scanner_config.get("min_on_sale_aggressive", 30)  # 流动性要求稍降，因为单价高
+        }
+
+        # 第一步：利用 API 强大的 Filter 功能进行海选（双轨制）
+        self.logger.info("📡 策略A: 正在获取稳健型饰品（步枪/探员/微冲/手枪）...")
+        steady_list = self.get_rank_list(filter_steady)
+        self.logger.info(f"  获取到 {len(steady_list)} 个稳健型候选")
+        
+        self.logger.info("📡 策略B: 正在获取高收益型饰品（匕首/手套）...")
+        aggressive_list = self.get_rank_list(filter_aggressive)
+        self.logger.info(f"  获取到 {len(aggressive_list)} 个高收益型候选")
+        
+        raw_list = steady_list + aggressive_list
+        
         if not raw_list:
             self.logger.error("无法获取排行榜数据，选品终止")
             return []
 
+        self.logger.info(f"📡 API 初筛完成，共找到 {len(raw_list)} 个潜在目标（稳健型: {len(steady_list)}, 高收益型: {len(aggressive_list)}）")
+
         final_whitelist = []
         total_items = len(raw_list)
 
-        # 第二步：三期过滤
+        # 第二步：本地金融逻辑精选（只做必要的检查）
         for index, item in enumerate(raw_list):
             name = item.get("name", "未知")
             good_id = item.get("id") or item.get("good_id")
@@ -273,43 +313,57 @@ class CSQAQScanner:
 
             self.logger.info(f"[{index+1}/{total_items}] 分析: {name}")
 
-            # 1. 回报率初筛
-            yyyp_lease_annual = item.get("yyyp_lease_annual", 0)
-            if not yyyp_lease_annual:
-                self.logger.debug(f"  - {name}: 缺少年化收益率数据，跳过")
-                continue
-
-            roi = float(yyyp_lease_annual) / 100.0
-            if not (self.MIN_ROI <= roi <= self.MAX_ROI):
-                self.logger.debug(f"  - {name}: ROI不达标 ({roi:.1%}，要求 {self.MIN_ROI:.1%}-{self.MAX_ROI:.1%})，跳过")
-                continue
-
-            # 2. 趋势初筛 (90天不跌超过10%)
+            # 判断是否为重资产（匕首/手套）
+            is_knife_or_glove = any(x in name for x in ["★", "手套", "匕首", "刀", "蝴蝶", "爪子", "M9", "刺刀"])
+            
+            # 1. 差异化涨跌幅过滤
             sell_price_rate_90 = float(item.get("sell_price_rate_90", 0))
-            if sell_price_rate_90 < self.MIN_TREND_90D:
-                self.logger.debug(f"  - {name}: 处于中长期下降通道 (90天跌幅 {sell_price_rate_90:.1f}%)，跳过")
-                continue
+            if is_knife_or_glove:
+                # 刀手套目前普遍在跌，我们允许-15%以内的回撤，因为租金能补回来（以息抵本策略）
+                max_decline = scanner_config.get("max_decline_aggressive", -15)
+                if sell_price_rate_90 < max_decline:
+                    self.logger.debug(f"  - {name}: 重资产跌幅过大 (90天跌幅 {sell_price_rate_90:.1f}% < {max_decline}%)，跳过")
+                    continue
+            else:
+                # 枪皮和探员要求更高，不能跌超过8%（因为租金相对低，本金必须稳）
+                max_decline = scanner_config.get("max_decline_steady", -8)
+                if sell_price_rate_90 < max_decline:
+                    self.logger.debug(f"  - {name}: 稳健型跌幅过大 (90天跌幅 {sell_price_rate_90:.1f}% < {max_decline}%)，跳过")
+                    continue
 
-            # 3. 详情深挖 (获取在租数量)
-            details = self.get_item_details(good_id)
-            if not details:
-                self.logger.debug(f"  - {name}: 无法获取详情数据，跳过")
-                continue
+            # 2. 差异化溢价检查 (UU对比BUFF)
+            yyyp_sell_price = float(item.get("yyyp_sell_price", 0))
+            buff_sell_price = float(item.get("buff_sell_price", 0))
+            
+            if buff_sell_price > 0:
+                markup = yyyp_sell_price / buff_sell_price
+                if is_knife_or_glove:
+                    # 刀手套溢价不能超过8%（因为基数大，溢价太高必跌）
+                    max_markup = scanner_config.get("max_markup_aggressive", 1.08)
+                    if markup > max_markup:
+                        self.logger.debug(f"  - {name}: 重资产溢价过高 ({markup*100:.1f}% > {max_markup*100:.1f}%)，跳过")
+                        continue
+                else:
+                    # 枪皮和探员允许15%溢价
+                    max_markup = scanner_config.get("max_markup_steady", 1.15)
+                    if markup > max_markup:
+                        self.logger.debug(f"  - {name}: 稳健型溢价过高 ({markup*100:.1f}% > {max_markup*100:.1f}%)，跳过")
+                        continue
 
-            yyyp_lease_num = int(details.get("yyyp_lease_num", 0) or item.get("yyyp_lease_num", 0))
-            if yyyp_lease_num < self.MIN_LEASE_NUM:
-                self.logger.debug(f"  - {name}: 在租热度不足 ({yyyp_lease_num} < {self.MIN_LEASE_NUM})，跳过")
-                continue
-
-            # 4. 稳定性终审 (90天价格波动低于15%)
-            volatility = self.get_stability_score(good_id)
-            if volatility > self.MAX_VOLATILITY:
-                self.logger.debug(f"  - {name}: 价格波动过大 ({volatility:.1%} > {self.MAX_VOLATILITY:.1%})，跳过")
+            # 3. 租金稳定性校验（通过 K 线接口）
+            # 获取最近 30 天的租金走势，看租金是否经常跳水
+            # 用于识别"虚假租金"（挂得高但没人租的情况）
+            lease_volatility = self.get_lease_stability(good_id)
+            max_lease_volatility = self.config.get("uu_auto_invest", {}).get("max_lease_volatility", 0.15)
+            if lease_volatility > max_lease_volatility:  # 租金波动超过15%的不要
+                self.logger.debug(f"  - {name}: 租金波动过大 ({lease_volatility:.1%} > {max_lease_volatility:.1%})，跳过")
                 continue
 
             # 所有检查通过，加入白名单
-            yyyp_sell_price = float(item.get("yyyp_sell_price", 0))
-            buy_limit = round(yyyp_sell_price * 0.92, 2)  # 求购建议价（市场价的92%）
+            yyyp_lease_annual = item.get("yyyp_lease_annual", 0)
+            roi = float(yyyp_lease_annual) / 100.0
+            buy_limit = round(yyyp_sell_price * 0.91, 2)  # 求购建议价（市场价的91%，统一标准）
+            asset_type = "重资产" if is_knife_or_glove else "稳健型"  # 标记资产类型
 
             final_whitelist.append({
                 "templateId": str(good_id),
@@ -317,13 +371,16 @@ class CSQAQScanner:
                 "roi": roi,
                 "roi_percent": yyyp_lease_annual,
                 "buy_limit": buy_limit,
+                "current_price": yyyp_sell_price,
                 "yyyp_sell_price": yyyp_sell_price,
-                "volatility": round(volatility, 4),
-                "yyyp_lease_num": yyyp_lease_num,
+                "buff_sell_price": buff_sell_price,
+                "lease_volatility": round(lease_volatility, 4),
+                "sell_price_rate_90": sell_price_rate_90,
+                "asset_type": asset_type,  # 标记资产类型
                 "selected_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             })
 
-            self.logger.info(f"  ✅ 选入白名单: {name} | 年化: {roi:.1%} | 波动: {volatility:.1%} | 推荐求购价: {buy_limit:.2f}元")
+            self.logger.info(f"  ✨ [锁定目标] {name} | 年化: {yyyp_lease_annual:.1f}% | 类型: {asset_type} | 90D趋势: {sell_price_rate_90:.1f}% | 租金波动: {lease_volatility:.1%} | 推荐求购价: {buy_limit:.2f}元")
 
             # 避免请求过快
             if (index + 1) % 10 == 0:

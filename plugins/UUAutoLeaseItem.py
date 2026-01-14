@@ -138,11 +138,21 @@ class UUAutoLeaseItem:
                     except:
                         buy_price = 0
                     
-                    # 如果开启了策略：市场价 >= 购入价时，不执行租赁，跳过让出售插件处理
+                    # 如果开启了策略：只在低于成本价时出租，达到止盈线时跳过租赁等待出售
                     if self.config["uu_auto_lease_item"].get("only_lease_below_cost", False):
-                        if buy_price > 0 and price >= buy_price:
-                            self.logger.info(f"物品 {short_name} 当前价({price}) >= 成本价({buy_price})，跳过租赁逻辑，等待出售。")
-                            continue
+                        if buy_price > 0:
+                            # 计算止盈线（与出售插件逻辑一致）
+                            sell_config = self.config.get("uu_auto_sell_item", {})
+                            profit_ratio = sell_config.get("take_profile_ratio", 0.1)  # 默认10%止盈率
+                            target_price = buy_price * (1 + profit_ratio)  # 止盈线 = 成本价 * (1 + 止盈率)
+                            
+                            # 只有当达到止盈线时，才跳过租赁，等待出售
+                            if price >= target_price:
+                                self.logger.info(f"物品 {short_name} 当前价({price}) >= 止盈线({target_price:.2f})，跳过租赁逻辑，等待出售。")
+                                continue
+                            # 如果当前价 >= 成本价但 < 止盈线，继续租赁（因为还没达到止盈目标）
+                            elif price >= buy_price:
+                                self.logger.info(f"物品 {short_name} 当前价({price}) >= 成本价({buy_price}) 但未达止盈线({target_price:.2f})，继续租赁。")
                     # ----------------------------
                     
                     if (
