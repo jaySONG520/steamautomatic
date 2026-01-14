@@ -71,11 +71,61 @@ class CSQAQScanner:
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
         
+        # === 代理配置（用于固定出口IP，解决VPN IP变化问题）===
+        # 从配置文件读取代理设置，如果没有配置则使用默认值
+        scanner_config = self.config.get("scanner", {})
+        proxy_config = scanner_config.get("proxy", {})
+        
+        # 默认代理端口（常见VPN软件的默认端口）
+        # Clash: 7890, v2rayN: 10809 (HTTP) 或 10808 (SOCKS)
+        default_proxy_port = proxy_config.get("port", 7890)
+        proxy_enabled = proxy_config.get("enable", False)
+        
+        self.proxies = None
+        if proxy_enabled:
+            proxy_host = proxy_config.get("host", "127.0.0.1")
+            proxy_type = proxy_config.get("type", "http")  # http 或 socks5
+            
+            if proxy_type == "socks5":
+                # SOCKS5 代理需要使用 socks 协议
+                try:
+                    import socks
+                    from urllib3.contrib.socks import SOCKSProxyManager
+                    self.proxies = {
+                        "http": f"socks5://{proxy_host}:{default_proxy_port}",
+                        "https": f"socks5://{proxy_host}:{default_proxy_port}"
+                    }
+                except ImportError:
+                    self.logger.warning("未安装 socks 支持库，SOCKS5 代理不可用，请安装: pip install pysocks")
+                    self.proxies = None
+            else:
+                # HTTP 代理
+                self.proxies = {
+                    "http": f"http://{proxy_host}:{default_proxy_port}",
+                    "https": f"http://{proxy_host}:{default_proxy_port}"
+                }
+            
+            if self.proxies:
+                self.logger.info(f"✅ 已启用固定代理: {proxy_type}://{proxy_host}:{default_proxy_port} (用于固定出口IP)")
+            else:
+                self.logger.warning("⚠️ 代理配置无效，将使用直连模式")
+        else:
+            self.logger.debug("未启用代理，使用直连模式（如果VPN导致IP变化，建议启用代理）")
+        
         # 配置重试机制，解决网络不稳
         self.session = requests.Session()
+        
+        # 应用代理配置（如果启用）
+        if self.proxies:
+            self.session.proxies.update(self.proxies)
+        
         retries = Retry(total=3, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504])
         self.session.mount('https://', HTTPAdapter(max_retries=retries))
         self.session.headers.update(self.headers)
+        
+        # 记录上次绑定IP时间，防止频繁请求触发429
+        self.last_bind_time = 0
+        self.last_bind_ip = None  # 记录上次绑定的IP地址（用于检测VPN IP变化）
         
         # 输出文件
         self.whitelist_path = "config/whitelist.json"
@@ -98,23 +148,62 @@ class CSQAQScanner:
         invest_config = self.config.get("uu_auto_invest", {})
         return invest_config.get("csqaq_api_token", "") or invest_config.get("csqaq_authorization", "")
 
-    def bind_local_ip(self) -> bool:
+    def _extract_ip_from_response(self, data: str) -> Optional[str]:
         """
-        绑定本机白名单IP
-        为当前请求的API_TOKEN绑定本机的IP地址，适用于非固定IP场景下使用
+        从绑定IP的响应中提取当前IP地址
+        例如："绑定IP更新成功，当前绑定IP为：102.114.14.120"
+        """
+        try:
+            if "当前绑定IP为：" in data:
+                ip = data.split("当前绑定IP为：")[1].strip()
+                return ip
+            return None
+        except:
+            return None
+
+    def _get_current_ip_from_response(self, data: str) -> Optional[str]:
+        """
+        从绑定IP的响应中提取当前IP地址
+        例如："绑定IP更新成功，当前绑定IP为：102.114.14.120"
+        """
+        try:
+            if "当前绑定IP为：" in data:
+                ip = data.split("当前绑定IP为：")[1].strip()
+                return ip
+            return None
+        except:
+            return None
+
+    def bind_local_ip(self, force: bool = False) -> bool:
+        """
+        绑定本机白名单IP (带冷却保护和IP变化检测)
+        为当前请求的API_TOKEN绑定本机的IP地址，适用于非固定IP场景下使用（如VPN）
         频率限制：30秒/次
+        :param force: 是否强制绑定（忽略冷却时间，用于401错误时或IP变化时）
         :return: 是否绑定成功
         """
         if not self.api_token:
             self.logger.warning("未配置 API Token，无法绑定IP")
             return False
 
+        # 冷却检查：30秒内不重复绑定（除非强制）
+        now = time.time()
+        if not force and now - self.last_bind_time < 35:
+            self.logger.debug("IP绑定处于冷却中，跳过本次绑定请求")
+            return True
+
         url = f"{self.base_url}/sys/bind_local_ip"
         
         try:
-            self.logger.info("正在绑定本机IP到API白名单...")
+            self.logger.info("正在维护API白名单(绑定本机IP)...")
             
             resp = self.session.post(url, headers=self.headers, timeout=10, verify=False)
+            
+            # 处理 429 Too Many Requests
+            if resp.status_code == 429:
+                self.logger.warning("绑定IP频率过快(HTTP 429)，视为成功，继续运行")
+                self.last_bind_time = now  # 更新时间，避免立即重试
+                return True
             
             if resp.status_code != 200:
                 self.logger.error(f"绑定IP失败: HTTP {resp.status_code}")
@@ -126,10 +215,18 @@ class CSQAQScanner:
             data = result.get("data", "")
             
             if code == 200:
+                self.last_bind_time = now
+                # 提取并记录当前绑定的IP
+                current_ip = self._get_current_ip_from_response(data)
+                if current_ip:
+                    if self.last_bind_ip and self.last_bind_ip != current_ip:
+                        self.logger.warning(f"⚠️ 检测到IP变化: {self.last_bind_ip} -> {current_ip} (可能是VPN切换)")
+                    self.last_bind_ip = current_ip
                 self.logger.info(f"✅ {data}")
                 return True
             elif code == 429:
                 self.logger.warning(f"⚠️ 请求频率过快，绑定IP频率限制为30秒/次。{data}")
+                self.last_bind_time = now  # 更新时间，避免立即重试
                 # 即使频率限制，也返回True，因为可能是刚刚绑定过
                 return True
             else:
@@ -145,123 +242,214 @@ class CSQAQScanner:
     def get_rank_list(self, filter_payload: dict) -> List[dict]:
         """
         通用排行榜请求（支持不同筛选策略）
+        优化：多页请求，扩大样本量
         :param filter_payload: filter 字典
         :return: 饰品列表
         """
         url = f"{self.base_url}/info/get_rank_list"
         
-        payload = {
-            "page_index": 1,
-            "page_size": 200,
-            "show_recently_price": True,  # 获取近期价格数据，用于趋势分析
-            "filter": filter_payload
-        }
+        all_items = []
+        max_pages = 3  # 翻前3页，扩大样本量
+        
+        for page in range(1, max_pages + 1):
+            payload = {
+                "page_index": page,
+                "page_size": 300,  # 拉满，每页300个
+                "show_recently_price": False,  # 不需要近期价格，减少数据量
+                "filter": filter_payload
+            }
 
-        try:
-            time.sleep(1)  # 遵守频率限制
-            
-            resp = requests.post(url, json=payload, headers=self.headers, timeout=15)
-            
-            if resp.status_code == 401:
-                self.logger.error("API返回401未授权错误，请检查 csqaq_api_token 和 IP 白名单")
-                return []
-            
-            if resp.status_code != 200:
-                self.logger.error(f"API请求失败: HTTP {resp.status_code}")
-                return []
-            
-            result = resp.json()
-            code = result.get("code")
-            
-            if code not in [200, 201]:
-                msg = result.get("msg", "未知错误")
-                self.logger.error(f"API返回错误: {msg} (code: {code})")
-                return []
-            
-            data = result.get("data", {})
-            items = data.get("data", [])
-            return items
-            
-        except Exception as e:
-            self.logger.error(f"获取排行榜失败: {e}")
-            return []
+            try:
+                # 每次请求前检查一下IP绑定状态
+                # 如果是第一次运行，或者距离上次绑定超过30秒（VPN可能切换了IP），重新绑定
+                now = time.time()
+                if self.last_bind_time == 0 or (now - self.last_bind_time >= 30):
+                    if self.last_bind_time > 0:
+                        self.logger.debug(f"距离上次绑定已超过30秒 ({now - self.last_bind_time:.1f}秒)，重新绑定IP（VPN可能切换了IP）...")
+                    self.bind_local_ip(force=(now - self.last_bind_time >= 30))  # 超过30秒强制绑定
+                
+                time.sleep(1)  # 遵守频率限制
+                
+                resp = self.session.post(url, json=payload, timeout=15, verify=False)
+                
+                if resp.status_code == 401:
+                    self.logger.warning(f"获取排行榜第{page}页失败: HTTP 401，尝试重新绑定IP...")
+                    # 强制绑定（忽略冷却时间），因为401说明IP可能失效了
+                    if self.bind_local_ip(force=True):
+                        time.sleep(2)  # 等待绑定生效
+                        # 重试一次
+                        resp = self.session.post(url, json=payload, timeout=15, verify=False)
+                    else:
+                        # 如果强制绑定失败（可能是冷却中），等待冷却时间后再试
+                        now = time.time()
+                        if self.last_bind_time > 0:
+                            wait_time = max(0, 35 - (now - self.last_bind_time))
+                            if wait_time > 0:
+                                self.logger.debug(f"等待IP绑定冷却时间: {wait_time:.1f}秒...")
+                                time.sleep(wait_time)
+                                if self.bind_local_ip(force=True):
+                                    time.sleep(2)
+                                    resp = self.session.post(url, json=payload, timeout=15, verify=False)
+                                else:
+                                    self.logger.error("重新绑定IP失败，停止获取排行榜")
+                                    break
+                        else:
+                            self.logger.error("重新绑定IP失败，停止获取排行榜")
+                            break
+                
+                if resp.status_code != 200:
+                    self.logger.warning(f"获取排行榜第{page}页失败: HTTP {resp.status_code}")
+                    break
+                
+                result = resp.json()
+                code = result.get("code")
+                
+                if code not in [200, 201]:
+                    msg = result.get("msg", "未知错误")
+                    self.logger.warning(f"获取排行榜第{page}页失败: {msg} (code: {code})")
+                    break
+                
+                data = result.get("data", {})
+                items = data.get("data", [])
+                
+                if not items:
+                    # 没有数据了，停止翻页
+                    break
+                
+                all_items.extend(items)
+                self.logger.debug(f"  第{page}页获取到 {len(items)} 个饰品")
+                
+            except Exception as e:
+                self.logger.error(f"获取排行榜第{page}页异常: {e}")
+                break
+        
+        return all_items
 
     def get_item_details(self, good_id: int) -> Optional[dict]:
         """
         获取详情：查在租数量、日租金、在售数量
         这是"验资"的关键步骤，用于识别"僵尸盘"
+        优化：添加401自动重绑IP机制
         """
         url = f"{self.base_url}/info/get_good"
         
-        try:
-            time.sleep(0.3)  # 遵守频率限制
-            
-            # 使用与 get_rank_list 相同的认证方式（直接传入 headers）
-            # CSQAQ API 使用 id 作为参数名
-            params = {"id": good_id}
-            resp = requests.get(url, params=params, headers=self.headers, timeout=10, verify=False)
-            
-            if resp.status_code != 200:
-                # 如果使用 id 失败，尝试 good_id（某些 API 版本可能不同）
-                if resp.status_code == 404 or resp.status_code == 400:
-                    params = {"good_id": good_id}
-                    resp = requests.get(url, params=params, headers=self.headers, timeout=10, verify=False)
-                    if resp.status_code != 200:
-                        if resp.status_code == 401:
-                            self.logger.debug(f"获取饰品 {good_id} 详情失败: HTTP 401 未授权（请检查 API Token 和 IP 白名单）")
+        # 重试机制：最多重试3次
+        for retry in range(3):
+            try:
+                time.sleep(0.3)  # 遵守频率限制
+                
+                # 使用 session 进行请求（与 get_rank_list 保持一致）
+                # CSQAQ API 使用 id 作为参数名
+                params = {"id": good_id}
+                resp = self.session.get(url, params=params, timeout=10, verify=False)
+                
+                # 如果返回401，尝试重新绑定IP
+                if resp.status_code == 401:
+                    if retry < 2:  # 最后一次重试不绑定，直接返回
+                        self.logger.debug(f"获取饰品 {good_id} 详情失败: HTTP 401，尝试重新绑定IP (重试 {retry+1}/3)...")
+                        # 强制绑定（忽略冷却时间），因为401说明IP可能失效了
+                        if self.bind_local_ip(force=True):
+                            time.sleep(2)  # 等待绑定生效
+                            continue  # 重试
                         else:
-                            self.logger.debug(f"获取饰品 {good_id} 详情失败: HTTP {resp.status_code}")
+                            # 如果强制绑定也失败（可能是冷却中），等待冷却时间后再试
+                            now = time.time()
+                            if self.last_bind_time > 0:
+                                wait_time = max(0, 35 - (now - self.last_bind_time))
+                                if wait_time > 0:
+                                    self.logger.debug(f"等待IP绑定冷却时间: {wait_time:.1f}秒...")
+                                    time.sleep(wait_time)
+                                    if self.bind_local_ip(force=True):
+                                        time.sleep(2)
+                                        continue
+                        self.logger.debug(f"获取饰品 {good_id} 详情失败: HTTP 401 未授权（绑定IP失败）")
                         return None
-                elif resp.status_code == 401:
-                    self.logger.debug(f"获取饰品 {good_id} 详情失败: HTTP 401 未授权（请检查 API Token 和 IP 白名单）")
+                
+                if resp.status_code != 200:
+                    # 如果使用 id 失败，尝试 good_id（某些 API 版本可能不同）
+                    if resp.status_code == 404 or resp.status_code == 400:
+                        params = {"good_id": good_id}
+                        resp = self.session.get(url, params=params, timeout=10, verify=False)
+                        if resp.status_code != 200:
+                            self.logger.debug(f"获取饰品 {good_id} 详情失败: HTTP {resp.status_code}")
+                            return None
+                    else:
+                        self.logger.debug(f"获取饰品 {good_id} 详情失败: HTTP {resp.status_code}")
+                        return None
+                
+                result = resp.json()
+                code = result.get("code")
+                msg = result.get("msg", "")
+                
+                # 检查 API 返回码
+                if code not in [200, 201]:
+                    # 记录具体错误信息
+                    if code == 429:
+                        self.logger.debug(f"获取饰品 {good_id} 详情失败: 频率限制 (429)")
+                    elif code == 401:
+                        if retry < 2:
+                            self.logger.debug(f"获取饰品 {good_id} 详情失败: 未授权 (401)，尝试重新绑定IP (重试 {retry+1}/3)...")
+                            # 强制绑定（忽略冷却时间）
+                            if self.bind_local_ip(force=True):
+                                time.sleep(2)
+                                continue
+                            else:
+                                # 如果强制绑定失败，等待冷却时间后再试
+                                now = time.time()
+                                if self.last_bind_time > 0:
+                                    wait_time = max(0, 35 - (now - self.last_bind_time))
+                                    if wait_time > 0:
+                                        self.logger.debug(f"等待IP绑定冷却时间: {wait_time:.1f}秒...")
+                                        time.sleep(wait_time)
+                                        if self.bind_local_ip(force=True):
+                                            time.sleep(2)
+                                            continue
+                        else:
+                            self.logger.debug(f"获取饰品 {good_id} 详情失败: 未授权 (401)（已重试3次）")
+                    else:
+                        self.logger.debug(f"获取饰品 {good_id} 详情失败: code={code}, msg={msg}")
                     return None
-                else:
-                    self.logger.debug(f"获取饰品 {good_id} 详情失败: HTTP {resp.status_code}")
+                
+                data = result.get("data", {})
+                # 根据实际 API 响应结构调整
+                goods_info = data.get("goods_info") or data.get("data") or data
+                
+                # 检查是否真的获取到了数据
+                if not goods_info or (isinstance(goods_info, dict) and not goods_info):
+                    self.logger.debug(f"获取饰品 {good_id} 详情失败: 数据为空")
                     return None
-            
-            result = resp.json()
-            code = result.get("code")
-            msg = result.get("msg", "")
-            
-            # 检查 API 返回码
-            if code not in [200, 201]:
-                # 记录具体错误信息（但只在 DEBUG 级别，避免日志过多）
-                if code == 429:
-                    self.logger.debug(f"获取饰品 {good_id} 详情失败: 频率限制 (429)")
-                elif code == 401:
-                    self.logger.debug(f"获取饰品 {good_id} 详情失败: 未授权 (401)")
+                
+                return goods_info
+                
+            except requests.exceptions.Timeout:
+                if retry < 2:
+                    self.logger.debug(f"获取饰品 {good_id} 详情失败: 请求超时，重试 {retry+1}/3...")
+                    time.sleep(1)
+                    continue
                 else:
-                    self.logger.debug(f"获取饰品 {good_id} 详情失败: code={code}, msg={msg}")
+                    self.logger.debug(f"获取饰品 {good_id} 详情失败: 请求超时（已重试3次）")
+                    return None
+            except requests.exceptions.RequestException as e:
+                if retry < 2:
+                    self.logger.debug(f"获取饰品 {good_id} 详情失败: 网络错误 - {e}，重试 {retry+1}/3...")
+                    time.sleep(1)
+                    continue
+                else:
+                    self.logger.debug(f"获取饰品 {good_id} 详情失败: 网络错误 - {e}（已重试3次）")
+                    return None
+            except Exception as e:
+                self.logger.debug(f"获取饰品 {good_id} 详情失败: {type(e).__name__} - {e}")
                 return None
-            
-            data = result.get("data", {})
-            # 根据实际 API 响应结构调整
-            goods_info = data.get("goods_info") or data.get("data") or data
-            
-            # 检查是否真的获取到了数据
-            if not goods_info or (isinstance(goods_info, dict) and not goods_info):
-                self.logger.debug(f"获取饰品 {good_id} 详情失败: 数据为空")
-                return None
-            
-            return goods_info
-            
-        except requests.exceptions.Timeout:
-            self.logger.debug(f"获取饰品 {good_id} 详情失败: 请求超时")
-            return None
-        except requests.exceptions.RequestException as e:
-            self.logger.debug(f"获取饰品 {good_id} 详情失败: 网络错误 - {e}")
-            return None
-        except Exception as e:
-            self.logger.debug(f"获取饰品 {good_id} 详情失败: {type(e).__name__} - {e}")
-            return None
+        
+        return None
 
-    def get_lease_stability(self, good_id: int) -> float:
+    def get_lease_stability(self, good_id: int) -> Optional[float]:
         """
         稳定性检查
         返回: 波动率 (0.0 - 1.0). 越低越好
-        如果数据获取失败，默认返回 0.5 (视为中等风险)
+        如果数据获取失败，返回 None（而不是默认值0.5），由调用方决定如何处理
         """
-        url = f"{self.base_url}/info/get_chart"
+        url = f"{self.base_url}/info/chart"  # 注意：API路径是 /info/chart，不是 /info/get_chart
         payload = {
             "good_id": good_id,
             "key": "short_lease_price",  # 检查短租价格走势
@@ -270,45 +458,104 @@ class CSQAQScanner:
             "style": "all_style"
         }
 
-        try:
-            time.sleep(0.2)  # 遵守频率限制
-            
-            resp = self.session.post(url, json=payload, timeout=10, verify=False)
-            
-            if resp.status_code != 200:
-                return 0.5  # 数据不足视为中等风险
-            
-            result = resp.json()
-            data = result.get('data', {})
-            prices = data.get('main_data', [])
-            
-            # 数据清洗，去除None
-            if prices:
-                prices = [p for p in prices if p is not None]
-            
-            if not prices or len(prices) < 5:
-                return 0.5  # 数据不足视为中等风险
-            
-            # 计算变异系数 (标准差/均值)
-            prices_float = [float(p) for p in prices if p]
-            if not prices_float:
-                return 0.5
-            
-            avg = sum(prices_float) / len(prices_float)
-            if avg == 0:
-                return 0.0
-            
-            # 计算标准差
-            std = (sum((x - avg) ** 2 for x in prices_float) / len(prices_float)) ** 0.5
-            
-            # 变异系数 = 标准差 / 均值
-            volatility = std / avg
-            return volatility
-            
-        except Exception as e:
-            # 出错了也不要卡死，默认中等风险
-            self.logger.debug(f"获取饰品 {good_id} 租金稳定性数据失败: {e}")
-            return 0.5
+        # 重试机制：最多重试2次
+        for retry in range(2):
+            try:
+                time.sleep(0.2)  # 遵守频率限制
+                
+                resp = self.session.post(url, json=payload, timeout=10, verify=False)
+                
+                # 如果返回401，尝试重新绑定IP
+                if resp.status_code == 401:
+                    if retry < 1:
+                        self.logger.debug(f"获取饰品 {good_id} 租金稳定性失败: HTTP 401，尝试重新绑定IP (重试 {retry+1}/2)...")
+                        # 强制绑定（忽略冷却时间）
+                        if self.bind_local_ip(force=True):
+                            time.sleep(2)
+                            continue
+                        else:
+                            # 如果强制绑定失败，等待冷却时间后再试
+                            now = time.time()
+                            if self.last_bind_time > 0:
+                                wait_time = max(0, 35 - (now - self.last_bind_time))
+                                if wait_time > 0:
+                                    self.logger.debug(f"等待IP绑定冷却时间: {wait_time:.1f}秒...")
+                                    time.sleep(wait_time)
+                                    if self.bind_local_ip(force=True):
+                                        time.sleep(2)
+                                        continue
+                    else:
+                        self.logger.debug(f"获取饰品 {good_id} 租金稳定性失败: HTTP 401 未授权（已重试2次）")
+                        return None
+                
+                if resp.status_code != 200:
+                    self.logger.debug(f"获取饰品 {good_id} 租金稳定性失败: HTTP {resp.status_code}")
+                    return None
+                
+                result = resp.json()
+                code = result.get("code")
+                
+                if code not in [200, 201]:
+                    if code == 401 and retry < 1:
+                        self.logger.debug(f"获取饰品 {good_id} 租金稳定性失败: 未授权 (401)，尝试重新绑定IP (重试 {retry+1}/2)...")
+                        # 强制绑定（忽略冷却时间）
+                        if self.bind_local_ip(force=True):
+                            time.sleep(2)
+                            continue
+                        else:
+                            # 如果强制绑定失败，等待冷却时间后再试
+                            now = time.time()
+                            if self.last_bind_time > 0:
+                                wait_time = max(0, 35 - (now - self.last_bind_time))
+                                if wait_time > 0:
+                                    self.logger.debug(f"等待IP绑定冷却时间: {wait_time:.1f}秒...")
+                                    time.sleep(wait_time)
+                                    if self.bind_local_ip(force=True):
+                                        time.sleep(2)
+                                        continue
+                    self.logger.debug(f"获取饰品 {good_id} 租金稳定性失败: code={code}")
+                    return None
+                
+                data = result.get('data', {})
+                prices = data.get('main_data', [])
+                
+                # 数据清洗，去除None
+                if prices:
+                    prices = [p for p in prices if p is not None]
+                
+                if not prices or len(prices) < 5:
+                    self.logger.debug(f"获取饰品 {good_id} 租金稳定性失败: 数据不足（少于5个数据点）")
+                    return None
+                
+                # 计算变异系数 (标准差/均值)
+                prices_float = [float(p) for p in prices if p]
+                if not prices_float:
+                    self.logger.debug(f"获取饰品 {good_id} 租金稳定性失败: 数据为空")
+                    return None
+                
+                avg = sum(prices_float) / len(prices_float)
+                if avg == 0:
+                    return 0.0
+                
+                # 计算标准差
+                std = (sum((x - avg) ** 2 for x in prices_float) / len(prices_float)) ** 0.5
+                
+                # 变异系数 = 标准差 / 均值
+                volatility = std / avg
+                return volatility
+                
+            except requests.exceptions.Timeout:
+                if retry < 1:
+                    time.sleep(1)
+                    continue
+                else:
+                    self.logger.debug(f"获取饰品 {good_id} 租金稳定性失败: 请求超时（已重试2次）")
+                    return None
+            except Exception as e:
+                self.logger.debug(f"获取饰品 {good_id} 租金稳定性失败: {type(e).__name__} - {e}")
+                return None
+        
+        return None
 
     def run_scan(self) -> List[dict]:
         """
@@ -429,35 +676,41 @@ class CSQAQScanner:
                 # 如果连续出现太多 401 错误，尝试重新绑定 IP
                 if consecutive_401_errors >= max_401_errors:
                     self.logger.warning(f"连续出现 {consecutive_401_errors} 个 401 错误，尝试重新绑定 IP...")
-                    if self.bind_local_ip():
+                    # 强制绑定（忽略冷却时间）
+                    if self.bind_local_ip(force=True):
                         consecutive_401_errors = 0  # 重置计数
                         time.sleep(2)  # 等待绑定生效
                     else:
-                        self.logger.error("重新绑定 IP 失败，详情接口可能无法使用")
+                        # 如果强制绑定失败，等待冷却时间后再试
+                        now = time.time()
+                        if self.last_bind_time > 0:
+                            wait_time = max(0, 35 - (now - self.last_bind_time))
+                            if wait_time > 0:
+                                self.logger.debug(f"等待IP绑定冷却时间: {wait_time:.1f}秒...")
+                                time.sleep(wait_time)
+                                if self.bind_local_ip(force=True):
+                                    consecutive_401_errors = 0
+                                    time.sleep(2)
+                                else:
+                                    self.logger.error("重新绑定 IP 失败，详情接口可能无法使用")
+                        else:
+                            self.logger.error("重新绑定 IP 失败，详情接口可能无法使用")
                         # 不 break，继续使用 filter 过滤的结果
                 
-                try:
-                    details = self.get_item_details(good_id)
-                    if details:
-                        lease_num = int(details.get('yyyp_lease_num', 0) or 0)
-                        consecutive_401_errors = 0  # 成功获取，重置计数
-                        self.logger.debug(f"  - {name}: 从详情接口获取在租数量: {lease_num}")
-                    else:
-                        # 如果详情接口失败，由于 filter 已经过滤了在租数量 >= MIN_LEASE_COUNT
-                        # 我们可以使用一个基于在售数量的合理估计值（而不是固定的最小值）
-                        consecutive_401_errors += 1
-                        # 使用在售数量估算在租数量（假设出租率为 20%，这是一个合理的估计）
-                        estimated_lease_num = max(self.MIN_LEASE_COUNT, int(sell_num * 0.20))
-                        lease_num = estimated_lease_num
-                        if (index + 1) % 10 == 0:
-                            self.logger.warning(f"  ⚠️ [{index+1}/{total_items}] {name} (ID: {good_id}): 无法获取在租数量，使用估算值 {lease_num} (基于在售数量 {sell_num})")
-                        else:
-                            self.logger.debug(f"  - {name}: 无法获取在租数量，使用估算值 {lease_num}")
-                except Exception as e:
-                    self.logger.debug(f"  - {name}: 获取详情失败: {e}，使用估算值")
-                    # 使用在售数量估算在租数量
-                    estimated_lease_num = max(self.MIN_LEASE_COUNT, int(sell_num * 0.20))
-                    lease_num = estimated_lease_num
+                # 宁缺毋滥模式：如果获取不到详情，直接跳过，绝不估算
+                details = self.get_item_details(good_id)
+                if not details:
+                    self.logger.warning(f"  ⚠️ {name}: 无法获取详情(可能被限流)，宁缺毋滥 -> 跳过")
+                    consecutive_401_errors += 1
+                    time.sleep(0.5)
+                    continue
+                
+                # 成功获取详情，重置错误计数
+                consecutive_401_errors = 0
+                lease_num = int(details.get('yyyp_lease_num', 0) or 0)
+                sell_num = int(details.get('yyyp_sell_num', 0) or sell_num)
+                daily_rent = float(details.get('yyyp_lease_price', 0) or daily_rent)
+                self.logger.debug(f"  - {name}: 从详情接口获取在租数量: {lease_num}")
 
             # 2. "僵尸盘"熔断（核心诉求：拒绝"2人租"惨案）
             # 注意：由于 filter 已经过滤了，这个检查主要是双重验证
@@ -484,7 +737,11 @@ class CSQAQScanner:
 
             # 5. 租金稳定性检查
             volatility = self.get_lease_stability(good_id)
-            if volatility > self.MAX_VOLATILITY:
+            if volatility is None:
+                # 如果无法获取波动率数据，记录警告但不跳过（因为可能是API问题，不是饰品问题）
+                self.logger.warning(f"  ⚠️ {name}: 无法获取租金稳定性数据，跳过波动率检查（可能是API限流或401错误）")
+                # 不跳过，继续处理（因为 filter 已经过滤了，这里只是额外验证）
+            elif volatility > self.MAX_VOLATILITY:
                 self.logger.info(f"  ❌ [租金乱] {name}: 波动率 {volatility:.1%} (> {self.MAX_VOLATILITY:.1%})")
                 time.sleep(0.3)
                 continue
