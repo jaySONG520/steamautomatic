@@ -656,10 +656,19 @@ class UUAutoSellItem:
                     # days_left = self.get_days_remaining(item)
                     days_left = 0  # 临时设置为0，禁用预售功能
                     
+                    # =======================================================
+                    # 最低价格限制：小于100元直接跳过，不进行任何分析和日志输出
+                    # =======================================================
+                    min_price = self.config["uu_auto_sell_item"].get("min_on_sale_price", 100)
+                    if market_price < min_price:
+                        # 静默跳过，不输出任何日志
+                        total_skipped += 1
+                        continue
+                    
                     # 检查是否已在出售列表中
                     is_on_sale = str(asset_id) in on_sale_asset_ids
                     
-                    # 日志输出
+                    # 日志输出（只有价格 >= 100元的物品才会输出）
                     self.logger.info(f"\n[{i+1}/{len(self.inventory_list)}] 分析: {full_name}")
                     if is_on_sale:
                         tradable_status = f"已上架出售中(AssetStatus={asset_status})"
@@ -837,11 +846,13 @@ class UUAutoSellItem:
                                 continue
                             
                             # =======================================================
-                            # 最低价格限制：小于100元不进行出售
+                            # 最低价格限制二次检查（市场价检查已在决策分析前完成）
                             # =======================================================
+                            # 注意：如果市场价 < 100元，已在前面跳过，不会执行到这里
+                            # 这里只作为最终出售价的二次验证
                             min_price = self.config["uu_auto_sell_item"].get("min_on_sale_price", 100)
                             if sale_price < min_price:
-                                self.logger.info(f"  ⚠️ 价格低于最低限制({min_price}元)，跳过上架（当前价格: {sale_price:.2f}元）")
+                                self.logger.info(f"  ⚠️ 最终出售价低于最低限制({min_price}元)，跳过上架（当前价格: {sale_price:.2f}元）")
                                 continue
                             
                             # =======================================================
