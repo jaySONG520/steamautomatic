@@ -73,7 +73,16 @@ class UUAutoSellItem:
                     self.logger.info(f"{commodity_name} 使用缓存结果，出售价格： {cached_price:.2f}")
                     return cached_price
 
-        sale_price_rsp = self.uuyoupin.get_market_sale_list_with_abrade(item_id).json()
+        try:
+            sale_price_rsp = self.uuyoupin.get_market_sale_list_with_abrade(item_id).json()
+        except Exception as e:
+            # 处理代理异常或其他网络错误
+            error_msg = str(e)
+            if "proxy" in error_msg.lower() or "ProxyError" in error_msg:
+                self.logger.error(f"代理异常。建议关闭代理。如果你连接Steam有困难，可单独打开配置文件内的Steam代理功能。")
+            else:
+                self.logger.error(f"获取市场价格失败: {e}")
+            raise  # 重新抛出异常，让调用者处理
         
         # 兼容大小写：Code 或 code
         code = sale_price_rsp.get("Code")
@@ -158,7 +167,7 @@ class UUAutoSellItem:
                     else:
                         self.logger.error(f"⚠️ 跑路价格计算出错 ({panic_price:.2f})，使用基准市场价 {base_market_price:.2f}")
                         final_price = base_market_price
-
+            
             self.logger.info(f"物品：{commodity_name} | 成本：{buy_price:.2f} | 市场最低：{sale_price_list[0] if sale_price_list else 0:.2f} | 基准市场价：{base_market_price:.2f} | 最终定价：{final_price:.2f}")
         else:
             final_price = 0
@@ -351,6 +360,122 @@ class UUAutoSellItem:
             self.logger.debug(f"UU API 获取租金失败: {e}")
             return 0, 0
 
+    def get_days_remaining(self, item):
+        """
+        解析库存数据，计算剩余冷却天数
+        支持多种格式：
+        1. CacheExpirationDesc: "5天22小时" (优先)
+        2. CacheExpiration: "2026-01-21 16:00:00" (备用)
+        3. TradeCooldown: "2026-01-21 16:00:00" (备用)
+        :param item: 库存物品数据
+        :return: 剩余冷却天数（0表示已解冻或没有冷却期）
+        """
+        try:
+            # 方法1: 优先从 CacheExpirationDesc 解析（格式："5天22小时"）
+            cache_expiration_desc = item.get("CacheExpirationDesc", "")
+            if cache_expiration_desc:
+                try:
+                    # 解析 "X天Y小时" 格式
+                    import re
+                    # 匹配 "X天" 和 "Y小时"
+                    day_match = re.search(r'(\d+)天', cache_expiration_desc)
+                    hour_match = re.search(r'(\d+)小时', cache_expiration_desc)
+                    
+                    days = 0
+                    hours = 0
+                    
+                    if day_match:
+                        days = int(day_match.group(1))
+                    if hour_match:
+                        hours = int(hour_match.group(1))
+                    
+                    # 如果有小时，向上取整（例如：5天22小时 = 6天）
+                    if hours > 0:
+                        days += 1
+                    
+                    if days > 0:
+                        return days
+                except Exception as e:
+                    self.logger.debug(f"解析 CacheExpirationDesc 失败: {e}")
+            
+            # 方法2: 从 CacheExpiration 解析（格式："2026-01-21 16:00:00"）
+            cache_expiration = item.get("CacheExpiration", "")
+            if cache_expiration:
+                try:
+                    time_formats = [
+                        "%Y-%m-%d %H:%M:%S",
+                        "%Y-%m-%dT%H:%M:%S",
+                        "%Y-%m-%d %H:%M:%S.%f",
+                        "%Y-%m-%dT%H:%M:%S.%f",
+                        "%Y/%m/%d %H:%M:%S",
+                    ]
+                    
+                    cooldown_time = None
+                    for fmt in time_formats:
+                        try:
+                            cooldown_time = datetime.datetime.strptime(str(cache_expiration), fmt)
+                            break
+                        except ValueError:
+                            continue
+                    
+                    if cooldown_time:
+                        now = datetime.datetime.now()
+                        if cooldown_time > now:
+                            delta = cooldown_time - now
+                            days = delta.days
+                            if delta.seconds > 0:
+                                days += 1
+                            return days
+                except Exception as e:
+                    self.logger.debug(f"解析 CacheExpiration 失败: {e}")
+            
+            # 方法3: 从 AssetInfo 或 item 中查找 TradeCooldown（备用）
+            asset_info = item.get("AssetInfo", {})
+            cooldown_str = (
+                asset_info.get("TradeCooldown") or 
+                asset_info.get("TradeCoolDown") or 
+                asset_info.get("Cooldown") or
+                asset_info.get("cooldown") or
+                item.get("TradeCooldown") or
+                item.get("TradeCoolDown") or
+                item.get("Cooldown")
+            )
+            
+            if cooldown_str:
+                try:
+                    time_formats = [
+                        "%Y-%m-%d %H:%M:%S",
+                        "%Y-%m-%dT%H:%M:%S",
+                        "%Y-%m-%d %H:%M:%S.%f",
+                        "%Y-%m-%dT%H:%M:%S.%f",
+                        "%Y/%m/%d %H:%M:%S",
+                    ]
+                    
+                    cooldown_time = None
+                    for fmt in time_formats:
+                        try:
+                            cooldown_time = datetime.datetime.strptime(str(cooldown_str), fmt)
+                            break
+                        except ValueError:
+                            continue
+                    
+                    if cooldown_time:
+                        now = datetime.datetime.now()
+                        if cooldown_time > now:
+                            delta = cooldown_time - now
+                            days = delta.days
+                            if delta.seconds > 0:
+                                days += 1
+                            return days
+                except Exception as e:
+                    self.logger.debug(f"解析 TradeCooldown 失败: {e}")
+            
+            return 0  # 没有找到冷却时间，视为现货
+            
+        except Exception as e:
+            self.logger.debug(f"解析冷却时间出错: {e}，默认按0天处理")
+            return 0
+
     def sell_item(self, items):
         item_infos = items
         num = len(item_infos)
@@ -359,26 +484,46 @@ class UUAutoSellItem:
             return 0
 
         try:
+            self.logger.info(f"正在调用上架接口，物品数量: {num}")
+            self.logger.debug(f"上架数据: {item_infos}")
+            
             rsp = self.uuyoupin.call_api(
                 "POST",
                 "/api/commodity/Inventory/SellInventoryWithLeaseV2",
                 data={"GameId": "730", "itemInfos": item_infos},  # Csgo
             ).json()
+            
+            self.logger.debug(f"上架接口响应: {rsp}")
+            
             # 兼容大小写：Code 或 code
             code = rsp.get("Code")
             if code is None:
                 code = rsp.get("code", -1)
             
             if code == 0:
+                # 尝试从响应中获取实际上架成功的数量
                 success_count = len(item_infos)
-                self.logger.info(f"成功上架 {success_count} 个物品")
+                data_section = rsp.get("Data", {})
+                if isinstance(data_section, dict) and "Commoditys" in data_section:
+                    # 统计成功上架的数量
+                    success_items = [c for c in data_section.get("Commoditys", []) if c.get("IsSuccess") == 1]
+                    success_count = len(success_items)
+                    if success_count < len(item_infos):
+                        fail_items = [c for c in data_section.get("Commoditys", []) if c.get("IsSuccess") != 1]
+                        for fail_item in fail_items:
+                            comm_id = fail_item.get("CommodityId", "未知ID")
+                            error_msg = fail_item.get("Message", "未知错误")
+                            self.logger.warning(f"  ⚠️ 物品 {comm_id} 上架失败: {error_msg}")
+                
+                self.logger.info(f"✅ 成功上架 {success_count}/{num} 个物品")
                 return success_count
             else:
                 msg = rsp.get("Msg") or rsp.get("msg", "未知错误")
-                self.logger.error(f"上架失败，返回结果：{msg} (code: {code})，全部内容：{rsp}")
+                self.logger.error(f"❌ 上架失败，返回结果：{msg} (code: {code})")
+                self.logger.debug(f"完整响应: {rsp}")
                 return -1
         except Exception as e:
-            self.logger.error(f"调用 SellInventoryWithLeaseV2 上架失败: {e}", exc_info=True)
+            self.logger.error(f"❌ 调用 SellInventoryWithLeaseV2 上架失败: {e}", exc_info=True)
             return -1
 
     def change_sale_price(self, items):
@@ -451,6 +596,20 @@ class UUAutoSellItem:
                 self.inventory_list = self.uuyoupin.get_inventory(refresh=True)
                 self.logger.info(f"库存总数: {len(self.inventory_list)} 件")
 
+                # 获取已上架物品列表（用于检查是否重复上架）
+                try:
+                    sale_inventory_list = self.get_uu_sale_inventory()
+                    # 构建已上架物品的 asset_id 集合，便于快速查找
+                    on_sale_asset_ids = set()
+                    for sale_item in sale_inventory_list:
+                        sale_asset_id = sale_item.get("SteamAssetId") or sale_item.get("AssetId")
+                        if sale_asset_id:
+                            on_sale_asset_ids.add(str(sale_asset_id))
+                    self.logger.info(f"已上架物品数量: {len(on_sale_asset_ids)} 件")
+                except Exception as e:
+                    self.logger.warning(f"获取已上架物品列表失败: {e}，将跳过重复检查")
+                    on_sale_asset_ids = set()
+
                 # 统计信息
                 total_analyzed = 0
                 total_sell = 0
@@ -474,25 +633,47 @@ class UUAutoSellItem:
                         buy_price = float(buy_price_str)
                     except:
                         buy_price = 0
-                    
+
                     self.buy_price_cache[item_id] = buy_price
-                    
+
                     # 跳过成本价为0的物品（无法进行盈亏分析）
                     if buy_price <= 0:
                         total_skipped += 1
                         continue
-                    
+
                     # 跳过市场价为0的物品（无法进行价格分析）
                     if market_price <= 0:
                         total_skipped += 1
                         continue
-                    
+
                     # 检查是否可交易
-                    is_tradable = item.get("Tradable", False) is not False and item.get("AssetStatus", 0) == 0
+                    asset_status = item.get("AssetStatus", 0)
+                    is_tradable = item.get("Tradable", False) is not False and asset_status == 0
+                    
+                    # =======================================================
+                    # 【预售功能已注释】计算剩余冷却天数（用于判断是否可预售）
+                    # =======================================================
+                    # days_left = self.get_days_remaining(item)
+                    days_left = 0  # 临时设置为0，禁用预售功能
+                    
+                    # 检查是否已在出售列表中
+                    is_on_sale = str(asset_id) in on_sale_asset_ids
                     
                     # 日志输出
                     self.logger.info(f"\n[{i+1}/{len(self.inventory_list)}] 分析: {full_name}")
-                    tradable_status = "可交易" if is_tradable else f"不可交易(AssetStatus={item.get('AssetStatus', 0)})"
+                    if is_on_sale:
+                        tradable_status = f"已上架出售中(AssetStatus={asset_status})"
+                    elif is_tradable:
+                        tradable_status = "可交易（现货）"
+                    # =======================================================
+                    # 【预售功能已注释】预售状态判断
+                    # =======================================================
+                    # elif 0 < days_left <= 30:
+                    #     tradable_status = f"可预售（冷却剩余 {days_left} 天，AssetStatus={asset_status}）"
+                    # elif days_left > 30:
+                    #     tradable_status = f"冷却期过长（{days_left}天 > 30天，AssetStatus={asset_status}）"
+                    else:
+                        tradable_status = f"不可交易(AssetStatus={asset_status})"
                     price_discount = (market_price - buy_price) / buy_price if buy_price > 0 else 0
                     self.logger.info(f"  状态: {tradable_status} | 市场价: {market_price:.2f}元 | 购入价: {buy_price:.2f}元 | 价差: {price_discount:.2%}")
                     
@@ -583,8 +764,41 @@ class UUAutoSellItem:
                         
                         self.logger.info(f"  💡 决策: {decision}")
                         
-                        # 只有决策为"出售"且可交易时，才执行出售操作
-                        if decision == "出售" and is_tradable:
+                        # =======================================================
+                        # 【预售功能已注释】解锁预售逻辑（优化状态判断）
+                        # =======================================================
+                        
+                        # 如果已在出售列表中，跳过（避免重复上架）
+                        if is_on_sale:
+                            self.logger.info(f"  ⚠️ 物品已在出售列表中，跳过上架")
+                            continue
+                        
+                        # 允许上架的条件：
+                        # 1. 现货 (is_tradable) - AssetStatus=0
+                        # =======================================================
+                        # 【预售功能已注释】预售相关条件判断
+                        # =======================================================
+                        # 2. 或者 处于预售期 (冷却天数 > 0 且 <= 30天) - AssetStatus 可以是 1 或 3
+                        # 3. 或者 AssetStatus=1/3 但不在出售列表中（可能是状态异常，但可以尝试上架）
+                        # 注意：AssetStatus=0 表示在库，AssetStatus=1/3 可能是冷却期或已上架
+                        can_list = False
+                        if is_tradable:
+                            # 现货，可以直接上架
+                            can_list = True
+                        # =======================================================
+                        # 【预售功能已注释】预售期上架判断
+                        # =======================================================
+                        # elif 0 < days_left <= 30:
+                        #     # 预售期，允许上架（无论 AssetStatus 是多少）
+                        #     can_list = True
+                        # elif asset_status in [1, 3] and not is_on_sale:
+                        #     # AssetStatus=1 或 3，但不在出售列表中，可能是冷却期但 days_left 计算失败
+                        #     # 或者状态异常，尝试允许上架（让 API 来判断）
+                        #     can_list = True
+                        #     self.logger.debug(f"  ⚠️ AssetStatus={asset_status} 且不在出售列表中，尝试允许上架")
+                        
+                        # 只有决策为"出售"且可上架时，才执行出售操作
+                        if decision == "出售" and can_list:
                             # 检查黑名单（支持精确匹配和模糊匹配）
                             blacklist_words = self.config["uu_auto_sell_item"].get("blacklist_words", [])
                             if blacklist_words:
@@ -622,6 +836,40 @@ class UUAutoSellItem:
                                 self.logger.warning(f"  ⚠️ 出售价格为0，跳过")
                                 continue
                             
+                            # =======================================================
+                            # 最低价格限制：小于100元不进行出售
+                            # =======================================================
+                            min_price = self.config["uu_auto_sell_item"].get("min_on_sale_price", 100)
+                            if sale_price < min_price:
+                                self.logger.info(f"  ⚠️ 价格低于最低限制({min_price}元)，跳过上架（当前价格: {sale_price:.2f}元）")
+                                continue
+                            
+                            # =======================================================
+                            # 【预售功能已注释】预售时间衰减定价策略 (Presale Pricing)
+                            # =======================================================
+                            # 
+                            # # 获取配置的日折价率（建议在 config.json5 中添加 "cooldown_discount_rate": 0.01）
+                            # # 如果没配置，默认 1% (0.01)
+                            # discount_rate = self.config["uu_auto_sell_item"].get("cooldown_discount_rate", 0.01)
+                            # 
+                            # if days_left > 0:
+                            #     # 计算折扣系数：1 - (天数 * 日折价率)
+                            #     # 例如：剩 7 天，折价率 1% -> 系数 0.93 (93折)
+                            #     discount_factor = 1 - (days_left * discount_rate)
+                            #     
+                            #     # 确保折扣系数不会为负数（最多打 0 折，即免费）
+                            #     discount_factor = max(0, discount_factor)
+                            #     
+                            #     # 价格调整
+                            #     original_price = sale_price
+                            #     sale_price = sale_price * discount_factor
+                            #     
+                            #     self.logger.info(f"  ⏳ [预售模式] 冷却剩余 {days_left} 天，执行折价: {original_price:.2f}元 -> {sale_price:.2f}元 (折扣: {discount_factor:.2%})")
+                            # else:
+                            #     self.logger.debug(f"  ⚡ 现货商品，保持基准市场价")
+                            # 
+                            # =======================================================
+                            
                             # 止盈策略
                             if self.config["uu_auto_sell_item"].get("take_profile", False):
                                 self.logger.info(f"  按{self.config['uu_auto_sell_item']['take_profile_ratio']:.2f}止盈率设置价格")
@@ -655,8 +903,19 @@ class UUAutoSellItem:
                             sale_item_list.append(sale_item)
                         elif decision == "出租" or decision == "保留":
                             self.logger.info(f"  🛑 策略决定暂不出售（决策: {decision}），继续持有/出租")
-                        elif not is_tradable:
-                            self.logger.info(f"  ⚠️ 决策为出售，但物品不可交易，无法上架")
+                        elif decision == "出售" and not can_list:
+                            # 决策为出售，但不符合上架条件
+                            if is_on_sale:
+                                self.logger.info(f"  ⚠️ 决策为出售，但物品已在出售列表中，跳过")
+                            # =======================================================
+                            # 【预售功能已注释】预售相关错误提示
+                            # =======================================================
+                            # elif days_left > 30:
+                            #     self.logger.info(f"  ⚠️ 决策为出售，但冷却期过长（{days_left}天 > 30天），无法上架预售")
+                            elif asset_status not in [0, 1, 3]:
+                                self.logger.info(f"  ⚠️ 决策为出售，但物品状态异常（AssetStatus={asset_status}），无法上架")
+                            else:
+                                self.logger.info(f"  ⚠️ 决策为出售，但物品不可交易，无法上架")
                         
                         # 避免请求过快
                         time.sleep(0.3)
@@ -679,9 +938,17 @@ class UUAutoSellItem:
                 # 执行出售
                 if sale_item_list:
                     self.logger.info(f"\n准备上架 {len(sale_item_list)} 件物品...")
+                    # 显示即将上架的物品详情
+                    for idx, sale_item in enumerate(sale_item_list, 1):
+                        self.logger.info(f"  [{idx}] AssetId: {sale_item.get('AssetId')}, Price: {sale_item.get('Price')}元")
                     self.operate_sleep()
-                    self.sell_item(sale_item_list)
-                    self.logger.info("上架完成")
+                    result = self.sell_item(sale_item_list)
+                    if result > 0:
+                        self.logger.info(f"✅ 上架完成，成功上架 {result} 件物品")
+                    elif result == 0:
+                        self.logger.warning(f"⚠️ 上架完成，但没有物品被上架（可能已上架或状态异常）")
+                    else:
+                        self.logger.error(f"❌ 上架失败，请检查日志")
                 else:
                     self.logger.info("\n没有需要上架的物品")
 
