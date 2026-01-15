@@ -3,6 +3,7 @@ import time
 
 import json5
 import numpy as np
+import requests
 import schedule
 
 import uuyoupinapi
@@ -23,6 +24,10 @@ class UUAutoLeaseItem:
         self.lease_price_cache = {}
         self.compensation_type = 0
         self.steam_client = steam_client
+        # CSQAQ API 配置
+        invest_config = self.config.get("uu_auto_invest", {})
+        self._csqaq_api_token = invest_config.get("csqaq_api_token", "")
+        self._csqaq_base_url = "https://api.csqaq.com/api/v1"
 
     @property
     def leased_inventory_list(self) -> list:
@@ -138,21 +143,20 @@ class UUAutoLeaseItem:
                     except:
                         buy_price = 0
                     
-                    # 如果开启了策略：只在低于成本价时出租，达到止盈线时跳过租赁等待出售
+                    # 如果开启了策略：使用租售决策逻辑（四象限策略）
                     if self.config["uu_auto_lease_item"].get("only_lease_below_cost", False):
                         if buy_price > 0:
-                            # 计算止盈线（与出售插件逻辑一致）
-                            sell_config = self.config.get("uu_auto_sell_item", {})
-                            profit_ratio = sell_config.get("take_profile_ratio", 0.1)  # 默认10%止盈率
-                            target_price = buy_price * (1 + profit_ratio)  # 止盈线 = 成本价 * (1 + 止盈率)
+                            # 使用租售决策逻辑替代简单的止盈线判断
+                            decision = self._make_rent_or_sell_decision_for_lease(short_name, buy_price, price, template_id)
                             
-                            # 只有当达到止盈线时，才跳过租赁，等待出售
-                            if price >= target_price:
-                                self.logger.info(f"物品 {short_name} 当前价({price}) >= 止盈线({target_price:.2f})，跳过租赁逻辑，等待出售。")
+                            if decision == "出售":
+                                # 决策为出售，跳过租赁，等待出售插件处理
+                                self.logger.info(f"物品 {short_name} 租售决策：出售，跳过租赁逻辑，等待出售插件处理。")
                                 continue
-                            # 如果当前价 >= 成本价但 < 止盈线，继续租赁（因为还没达到止盈目标）
-                            elif price >= buy_price:
-                                self.logger.info(f"物品 {short_name} 当前价({price}) >= 成本价({buy_price}) 但未达止盈线({target_price:.2f})，继续租赁。")
+                            elif decision == "出租":
+                                # 决策为出租，继续租赁流程
+                                self.logger.debug(f"物品 {short_name} 租售决策：出租，继续租赁。")
+                            # else: "保留" 或其他情况，继续租赁流程
                     # ----------------------------
                     
                     if (
@@ -319,6 +323,164 @@ class UUAutoLeaseItem:
             time.sleep(self.timeSleep)
         else:
             time.sleep(sleep)
+
+    def _get_good_id_from_csqaq(self, item_name):
+        """通过物品名称搜索获取 CSQAQ 的 good_id"""
+        if not self._csqaq_api_token:
+            return None
+        
+        url = f"{self._csqaq_base_url}/info/get_good_id"
+        headers = {
+            "ApiToken": self._csqaq_api_token,
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "page_index": 1,
+            "page_size": 20,
+            "search": item_name
+        }
+        
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=10)
+            if resp.status_code != 200:
+                return None
+            
+            result = resp.json()
+            if result.get("code") != 200:
+                return None
+            
+            data = result.get("data", {}).get("data", {})
+            if not data:
+                return None
+            
+            # 返回第一个匹配的 good_id
+            for good_id_str, item_info in data.items():
+                if isinstance(item_info, dict) and "id" in item_info:
+                    return item_info["id"]
+            
+            return None
+            
+        except Exception as e:
+            self.logger.debug(f"CSQAQ 搜索 good_id 失败: {e}")
+            return None
+
+    def _get_lease_price_and_apy_from_csqaq(self, template_id, current_market_price):
+        """从 CSQAQ API 获取当前饰品的日租金和年化收益率 (APY)"""
+        if current_market_price <= 0:
+            return 0, 0
+        
+        if not self._csqaq_api_token:
+            return 0, 0
+        
+        url = f"{self._csqaq_base_url}/info/good"
+        headers = {"ApiToken": self._csqaq_api_token}
+        params = {"id": int(template_id)}
+        
+        try:
+            resp = requests.get(url, headers=headers, params=params, timeout=10)
+            if resp.status_code != 200:
+                return 0, 0
+            
+            result = resp.json()
+            if result.get("code") != 200:
+                return 0, 0
+            
+            goods_info = result.get("data", {}).get("goods_info", {})
+            if not goods_info:
+                return 0, 0
+            
+            # 从 CSQAQ 获取日租金和年化率
+            daily_rent = float(goods_info.get("yyyp_lease_price", 0) or 0)
+            apy_percent = float(goods_info.get("yyyp_lease_annual", 0) or 0)  # CSQAQ 返回的是百分比
+            apy = apy_percent / 100.0  # 转换为小数
+            
+            # 如果 CSQAQ 没有年化率，但有日租金，手动计算
+            if daily_rent > 0 and apy == 0:
+                apy = (daily_rent * 365) / current_market_price
+            
+            return daily_rent, apy
+            
+        except Exception as e:
+            self.logger.debug(f"CSQAQ 获取租金失败: {e}")
+            return 0, 0
+
+    def _make_rent_or_sell_decision_for_lease(self, item_name, buy_price, market_price, template_id):
+        """
+        进行租售决策（复用租售平衡策略逻辑）
+        :return: "出售" | "出租" | "保留"
+        """
+        # 如果没有购入价，无法判断盈亏，默认出租
+        if buy_price <= 0:
+            return "出租"
+        
+        # 获取 CSQAQ 数据
+        yyyp_sell_price = 0
+        daily_rent = 0
+        apy = 0
+        
+        # 尝试通过名称获取 good_id
+        good_id = self._get_good_id_from_csqaq(item_name)
+        if good_id:
+            # 使用 good_id 获取详细信息
+            url = f"{self._csqaq_base_url}/info/good"
+            headers = {"ApiToken": self._csqaq_api_token}
+            params = {"id": good_id}
+            
+            try:
+                resp = requests.get(url, headers=headers, params=params, timeout=10)
+                if resp.status_code == 200:
+                    result = resp.json()
+                    if result.get("code") == 200:
+                        goods_info = result.get("data", {}).get("goods_info", {})
+                        if goods_info:
+                            yyyp_sell_price = float(goods_info.get("yyyp_sell_price", 0) or 0)
+                            daily_rent = float(goods_info.get("yyyp_lease_price", 0) or 0)
+                            apy_percent = float(goods_info.get("yyyp_lease_annual", 0) or 0)
+                            apy = apy_percent / 100.0
+                            
+                            # 如果 CSQAQ 没有年化率，但有日租金，手动计算
+                            if daily_rent > 0 and apy == 0:
+                                current_price = yyyp_sell_price if yyyp_sell_price > 0 else market_price
+                                if current_price > 0:
+                                    apy = (daily_rent * 365) / current_price
+            except:
+                pass
+        
+        # 如果 CSQAQ 获取失败，尝试使用 template_id 直接获取
+        if daily_rent == 0 and apy == 0:
+            daily_rent, apy = self._get_lease_price_and_apy_from_csqaq(template_id, market_price)
+        
+        # 使用市场价作为当前价（如果没有CSQAQ在售价）
+        current_price = yyyp_sell_price if yyyp_sell_price > 0 else market_price
+        
+        # 计算浮动盈亏率
+        pnl_ratio = (current_price - buy_price) / buy_price
+        
+        # 四象限决策逻辑（与 UUAutoSellItem 保持一致）
+        stop_loss_limit = -0.15
+        
+        # 场景 D: 深度亏损
+        if pnl_ratio < stop_loss_limit:
+            return "出售"  # 强制止损
+        
+        # 场景 B: 浮亏可控 + 高回报
+        elif stop_loss_limit <= pnl_ratio < -0.05 and apy > 0.20:
+            return "出租"  # 保留吃租
+        
+        # 场景 C: 浮亏可控 + 低回报
+        elif stop_loss_limit <= pnl_ratio < -0.05 and apy <= 0.20:
+            return "出售"  # 不值得持有
+        
+        # 场景 A: 盈利或微亏 (>-5%)
+        else:
+            # 如果盈利 < 10%，继续出租（吃租金）
+            if pnl_ratio < 0.10:
+                return "出租"  # 盈利不足10%，继续持有吃租
+            # 如果盈利 >= 10%，且年化率很高，也继续出租
+            elif apy > 0.60:
+                return "出租"  # 现金奶牛，即使盈利也继续出租
+            else:
+                return "出售"  # 盈利>=10%且年化率不高，可以考虑出售
 
     def pre_check_price(self):
         self.get_lease_price(44444, 1000)

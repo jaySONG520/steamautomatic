@@ -62,7 +62,7 @@ def init_files_and_params() -> int:
     logger.info(f"{Fore.RED + Style.BRIGHT}！！！ 本程序完全{Fore.YELLOW}免费开源 {Fore.RED}若有人向你售卖，请立即投诉并申请退款 ！！！ \n")
     logger.info(f"当前版本: {CURRENT_VERSION}   编译信息: {BUILD_INFO}")
     try:
-        with open(CONFIG_FILE_PATH, "r", encoding=get_encoding(CONFIG_FILE_PATH)) as f:
+        with open(CONFIG_FILE_PATH, "r", encoding="utf-8") as f:
             config = json5.load(f)
     except:
         config = {}
@@ -87,7 +87,7 @@ def init_files_and_params() -> int:
         logger.info("检测到首次运行, 已为您生成" + CONFIG_FILE_PATH + ", 请按照README提示填写配置文件! ")
         first_run = True
     else:
-        with open(CONFIG_FILE_PATH, "r", encoding=get_encoding(CONFIG_FILE_PATH)) as f:
+        with open(CONFIG_FILE_PATH, "r", encoding="utf-8") as f:
             try:
                 config = json5.load(f)
             except Exception as e:

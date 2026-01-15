@@ -12,7 +12,7 @@ logger = PluginLogger("通知服务")
 config = {}
 try:
     if os.path.exists(CONFIG_FILE_PATH):
-        with open(CONFIG_FILE_PATH, "r", encoding=get_encoding(CONFIG_FILE_PATH)) as file:
+        with open(CONFIG_FILE_PATH, "r", encoding="utf-8") as file:
             config = json5.load(file)
         config = config.get("notify_service", {})
         if config == {}:

@@ -27,7 +27,7 @@ steam_client_mutex = {}  # 每个SteamClient实例对应一个互斥锁
 token_refresh_thread = []  # 后台刷新线程引用
 
 try:
-    with open(CONFIG_FILE_PATH, "r", encoding=get_encoding(CONFIG_FILE_PATH)) as f:
+    with open(CONFIG_FILE_PATH, "r", encoding="utf-8") as f:
         config = json5.loads(f.read())
 except Exception:
     pass
