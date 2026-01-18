@@ -143,6 +143,24 @@ class UUAutoLeaseItem:
                 self.logger.info("正在获取悠悠有品库存...")
 
                 self.inventory_list = self.uuyoupin.get_inventory(refresh=True)
+                # 获取当前已上架的出售/出租列表，用于避免重复上架或先下架再出租
+                sell_asset_to_commodity = {}
+                lease_asset_ids = set()
+                try:
+                    sell_shelf = self.uuyoupin.get_sell_list()
+                    for item in sell_shelf:
+                        asset_id = item.get("steamAssetId") or item.get("steam_asset_id") or item.get("steamAssetID")
+                        commodity_id = item.get("id") or item.get("commodityId") or item.get("commodityID")
+                        if asset_id and commodity_id:
+                            sell_asset_to_commodity[str(asset_id)] = commodity_id
+                except Exception as e:
+                    self.logger.warning(f"获取出售列表失败，可能导致重复上架：{e}")
+
+                try:
+                    lease_shelf = self.uuyoupin.get_uu_leased_inventory()
+                    lease_asset_ids = {str(asset.assetid) for asset in lease_shelf if getattr(asset, "assetid", None)}
+                except Exception as e:
+                    self.logger.warning(f"获取出租列表失败，可能导致重复上架：{e}")
 
                 for i, item in enumerate(self.inventory_list):
                     if item["AssetInfo"] is None:
@@ -152,6 +170,30 @@ class UUAutoLeaseItem:
                     short_name = item["ShotName"]
                     full_name = item.get("TemplateInfo", {}).get("CommodityName") or short_name
                     price = item["TemplateInfo"]["MarkPrice"]
+                    asset_id_str = str(asset_id)
+
+                    # 已在出租列表中，跳过
+                    if asset_id_str in lease_asset_ids:
+                        self.logger.info(f"物品 {short_name} 已在出租列表中，跳过")
+                        continue
+
+                    # 已在出售列表中：黑名单物品先下架再出租，否则跳过出租
+                    if asset_id_str in sell_asset_to_commodity:
+                        if self._is_in_sell_blacklist(full_name):
+                            commodity_id = sell_asset_to_commodity[asset_id_str]
+                            self.logger.info(f"物品 {short_name} 命中出售黑名单且已在出售，尝试下架后再出租")
+                            try:
+                                off_rsp = self.uuyoupin.off_shelf([commodity_id]).json()
+                                if off_rsp.get("Code") not in (0, None):
+                                    self.logger.error(f"物品 {short_name} 下架失败：{off_rsp.get('Msg')}")
+                                    continue
+                            except Exception as e:
+                                self.logger.error(f"物品 {short_name} 下架失败：{e}")
+                                continue
+                            time.sleep(0.3)
+                        else:
+                            self.logger.info(f"物品 {short_name} 已在出售列表中，跳过出租")
+                            continue
                     
                     # --- 新增逻辑：提取购入价并对比 ---
                     # 提取购入价（同出售插件逻辑）
@@ -213,7 +255,9 @@ class UUAutoLeaseItem:
 
                 self.operate_sleep()
                 if len(lease_item_list) > 0:
-                    success_count = self.uuyoupin.put_items_on_lease_shelf(lease_item_list)
+                    success_count, lease_rsp = self.uuyoupin.put_items_on_lease_shelf(lease_item_list)
+                    if lease_rsp.get("Code") not in (0, None):
+                        self.logger.error(f"出租上架失败：{lease_rsp.get('Msg')}")
                     if success_count > 0:
                         self.logger.info(f"成功上架 {success_count} 个物品。")
                     else:

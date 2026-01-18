@@ -579,13 +579,16 @@ class UUAccount:
                 "Sessionid": self.deviceToken,
             },
         ).json()
+        if lease_on_shelf_rsp.get("Code") not in (0, None):
+            logger.error(f"出租上架失败：{lease_on_shelf_rsp.get('Msg')}")
+            return 0, lease_on_shelf_rsp
         success_count = 0
-        for asset in lease_on_shelf_rsp["Data"]:
+        for asset in lease_on_shelf_rsp.get("Data", []):
             if asset["Status"] == 1:
                 success_count += 1
             else:
                 logger.error(f"上架物品 {asset['AssetId']}(AssetId) 失败，原因：{asset['Remark']}")
-        return success_count
+        return success_count, lease_on_shelf_rsp
 
     def get_uu_leased_inventory(self, pageIndex=1, pageSize=100) -> list[models.LeaseAsset]:
         new_leased_inventory_list = self.get_one_channel_leased_inventory("/api/youpin/bff/new/commodity/v1/commodity/list/lease", pageIndex, pageSize)
