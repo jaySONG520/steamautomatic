@@ -29,6 +29,23 @@ class UUAutoLeaseItem:
         self._csqaq_api_token = invest_config.get("csqaq_api_token", "")
         self._csqaq_base_url = "https://api.csqaq.com/api/v1"
 
+    def _is_in_sell_blacklist(self, full_name: str) -> bool:
+        blacklist_words = self.config.get("uu_auto_sell_item", {}).get("blacklist_words", [])
+        if not blacklist_words or not full_name:
+            return False
+        for blacklist_item in blacklist_words:
+            if not blacklist_item:
+                continue
+            # 精确匹配：包含磨损信息
+            if "(" in blacklist_item and ")" in blacklist_item:
+                if blacklist_item == full_name:
+                    return True
+            else:
+                # 模糊匹配：名称包含即可
+                if blacklist_item in full_name:
+                    return True
+        return False
+
     @property
     def leased_inventory_list(self) -> list:
         return self.uuyoupin.get_uu_leased_inventory()
@@ -133,6 +150,7 @@ class UUAutoLeaseItem:
                     asset_id = item["SteamAssetId"]
                     template_id = item["TemplateInfo"]["Id"]
                     short_name = item["ShotName"]
+                    full_name = item.get("TemplateInfo", {}).get("CommodityName") or short_name
                     price = item["TemplateInfo"]["MarkPrice"]
                     
                     # --- 新增逻辑：提取购入价并对比 ---
@@ -150,9 +168,13 @@ class UUAutoLeaseItem:
                             decision = self._make_rent_or_sell_decision_for_lease(short_name, buy_price, price, template_id)
                             
                             if decision == "出售":
-                                # 决策为出售，跳过租赁，等待出售插件处理
-                                self.logger.info(f"物品 {short_name} 租售决策：出售，跳过租赁逻辑，等待出售插件处理。")
-                                continue
+                                # 决策为出售，若命中出售黑名单则仍可出租
+                                if self._is_in_sell_blacklist(full_name):
+                                    self.logger.info(f"物品 {short_name} 命中出售黑名单，仍继续出租。")
+                                else:
+                                    # 决策为出售，跳过租赁，等待出售插件处理
+                                    self.logger.info(f"物品 {short_name} 租售决策：出售，跳过租赁逻辑，等待出售插件处理。")
+                                    continue
                             elif decision == "出租":
                                 # 决策为出租，继续租赁流程
                                 self.logger.debug(f"物品 {short_name} 租售决策：出租，继续租赁。")
