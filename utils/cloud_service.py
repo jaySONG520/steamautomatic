@@ -160,17 +160,18 @@ def getAds():
         )
         response.raise_for_status()
         ads = response.json()
-        if len(ads) > 0:
-            print("")
-        for ad in ads:
-            if ad.get("stop", 0):
-                print(f"{parseBroadcastMessage(ad['message'])}\n(滞留 {ad['stop']} 秒)\n")
-                if not hasattr(sys, "_MEIPASS"):
-                    print("源码模式运行, 不进行暂停")
-                else:
-                    time.sleep(ad["stop"])
-            else:
-                print(f"{parseBroadcastMessage(ad['message'])}\n")
+        # 注释掉广告输出，避免日志过大
+        # if len(ads) > 0:
+        #     print("")
+        # for ad in ads:
+        #     if ad.get("stop", 0):
+        #         print(f"{parseBroadcastMessage(ad['message'])}\n(滞留 {ad['stop']} 秒)\n")
+        #         if not hasattr(sys, "_MEIPASS"):
+        #             print("源码模式运行, 不进行暂停")
+        #         else:
+        #             time.sleep(ad["stop"])
+        #     else:
+        #         print(f"{parseBroadcastMessage(ad['message'])}\n")
 
     except Exception as e:
         logger.warning("云服务无法连接，建议检查网络连接")

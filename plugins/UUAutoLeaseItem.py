@@ -203,24 +203,24 @@ class UUAutoLeaseItem:
                     except:
                         buy_price = 0
                     
-                    # 如果开启了策略：使用租售决策逻辑（四象限策略）
-                    if self.config["uu_auto_lease_item"].get("only_lease_below_cost", False):
-                        if buy_price > 0:
-                            # 使用租售决策逻辑替代简单的止盈线判断
-                            decision = self._make_rent_or_sell_decision_for_lease(short_name, buy_price, price, template_id)
-                            
-                            if decision == "出售":
-                                # 决策为出售，若命中出售黑名单则仍可出租
-                                if self._is_in_sell_blacklist(full_name):
-                                    self.logger.info(f"物品 {short_name} 命中出售黑名单，仍继续出租。")
-                                else:
-                                    # 决策为出售，跳过租赁，等待出售插件处理
-                                    self.logger.info(f"物品 {short_name} 租售决策：出售，跳过租赁逻辑，等待出售插件处理。")
-                                    continue
-                            elif decision == "出租":
-                                # 决策为出租，继续租赁流程
-                                self.logger.debug(f"物品 {short_name} 租售决策：出租，继续租赁。")
-                            # else: "保留" 或其他情况，继续租赁流程
+                    # 如果有购入价，使用租售决策逻辑（四象限策略）与出售插件保持一致
+                    if buy_price > 0:
+                        # 使用租售决策逻辑，与 UUAutoSellItem 插件保持一致
+                        decision = self._make_rent_or_sell_decision_for_lease(short_name, buy_price, price, template_id)
+                        
+                        if decision == "出售":
+                            # 决策为出售，若命中出售黑名单则仍可出租
+                            if self._is_in_sell_blacklist(full_name):
+                                self.logger.info(f"物品 {short_name} 命中出售黑名单，仍继续出租。")
+                            else:
+                                # 决策为出售，跳过租赁，等待出售插件处理
+                                self.logger.info(f"物品 {short_name} 租售决策：出售，跳过租赁逻辑，等待出售插件处理。")
+                                continue
+                        elif decision == "出租":
+                            # 决策为出租，继续租赁流程
+                            self.logger.info(f"物品 {short_name} 租售决策：出租，继续租赁流程。")
+                        # else: "保留" 或其他情况，继续租赁流程
+                    # 如果没有购入价（buy_price = 0），使用原来的逻辑（所有符合条件的都上架）
                     # ----------------------------
                     
                     if (
