@@ -162,6 +162,9 @@ class UUAutoLeaseItem:
                 except Exception as e:
                     self.logger.warning(f"获取出租列表失败，可能导致重复上架：{e}")
 
+                # 统计信息
+                total_skipped = 0
+                
                 for i, item in enumerate(self.inventory_list):
                     if item["AssetInfo"] is None:
                         continue
@@ -172,9 +175,34 @@ class UUAutoLeaseItem:
                     price = item["TemplateInfo"]["MarkPrice"]
                     asset_id_str = str(asset_id)
 
+                    # --- 应用与 UUAutoSellItem 相同的跳过逻辑 ---
+                    # 提取购入价（同出售插件逻辑）
+                    buy_price_str = item.get("AssetBuyPrice", "0").replace("购￥", "")
+                    try:
+                        buy_price = float(buy_price_str)
+                    except:
+                        buy_price = 0
+                    
+                    # 跳过成本价为0的物品（无法进行盈亏分析）
+                    if buy_price <= 0:
+                        total_skipped += 1
+                        continue
+                    
+                    # 跳过市场价为0的物品（无法进行价格分析）
+                    if price <= 0:
+                        total_skipped += 1
+                        continue
+                    
+                    # 最低价格限制：小于100元直接跳过，不进行任何分析和日志输出
+                    min_price = self.config.get("uu_auto_sell_item", {}).get("min_on_sale_price", 100)
+                    if price < min_price:
+                        # 静默跳过，不输出任何日志
+                        total_skipped += 1
+                        continue
+                    # --- 跳过逻辑结束 ---
+
                     # 已在出租列表中，跳过
                     if asset_id_str in lease_asset_ids:
-                        self.logger.info(f"物品 {short_name} 已在出租列表中，跳过")
                         continue
 
                     # 已在出售列表中：黑名单物品先下架再出租，否则跳过出租
@@ -192,36 +220,24 @@ class UUAutoLeaseItem:
                                 continue
                             time.sleep(0.3)
                         else:
-                            self.logger.info(f"物品 {short_name} 已在出售列表中，跳过出租")
                             continue
                     
-                    # --- 新增逻辑：提取购入价并对比 ---
-                    # 提取购入价（同出售插件逻辑）
-                    buy_price_str = item.get("AssetBuyPrice", "0").replace("购￥", "")
-                    try:
-                        buy_price = float(buy_price_str)
-                    except:
-                        buy_price = 0
+                    # 使用租售决策逻辑（四象限策略）与出售插件保持一致
+                    # 注意：buy_price > 0 已在循环开始处检查，这里总是为真
+                    decision = self._make_rent_or_sell_decision_for_lease(short_name, buy_price, price, template_id)
                     
-                    # 如果有购入价，使用租售决策逻辑（四象限策略）与出售插件保持一致
-                    if buy_price > 0:
-                        # 使用租售决策逻辑，与 UUAutoSellItem 插件保持一致
-                        decision = self._make_rent_or_sell_decision_for_lease(short_name, buy_price, price, template_id)
-                        
-                        if decision == "出售":
-                            # 决策为出售，若命中出售黑名单则仍可出租
-                            if self._is_in_sell_blacklist(full_name):
-                                self.logger.info(f"物品 {short_name} 命中出售黑名单，仍继续出租。")
-                            else:
-                                # 决策为出售，跳过租赁，等待出售插件处理
-                                self.logger.info(f"物品 {short_name} 租售决策：出售，跳过租赁逻辑，等待出售插件处理。")
-                                continue
-                        elif decision == "出租":
-                            # 决策为出租，继续租赁流程
-                            self.logger.info(f"物品 {short_name} 租售决策：出租，继续租赁流程。")
-                        # else: "保留" 或其他情况，继续租赁流程
-                    # 如果没有购入价（buy_price = 0），使用原来的逻辑（所有符合条件的都上架）
-                    # ----------------------------
+                    if decision == "出售":
+                        # 决策为出售，若命中出售黑名单则仍可出租
+                        if self._is_in_sell_blacklist(full_name):
+                            self.logger.info(f"物品 {short_name} 命中出售黑名单，仍继续出租。")
+                        else:
+                            # 决策为出售，跳过租赁，等待出售插件处理
+                            self.logger.info(f"物品 {short_name} 租售决策：出售，跳过租赁逻辑，等待出售插件处理。")
+                            continue
+                    elif decision == "出租":
+                        # 决策为出租，继续租赁流程
+                        self.logger.info(f"物品 {short_name} 租售决策：出租，继续租赁流程。")
+                    # else: "保留" 或其他情况，继续租赁流程
                     
                     if (
                         price < self.config["uu_auto_lease_item"]["filter_price"]
@@ -252,6 +268,8 @@ class UUAutoLeaseItem:
                     lease_item_list.append(lease_item)
 
                 self.logger.info(f"共 {len(lease_item_list)} 件物品可以出租。")
+                if total_skipped > 0:
+                    self.logger.info(f"跳过物品: {total_skipped} 件（成本价为0或市场价为0或价格低于最低限制）")
 
                 self.operate_sleep()
                 if len(lease_item_list) > 0:
