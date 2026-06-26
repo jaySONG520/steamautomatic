@@ -61,6 +61,7 @@ class UUAccount:
         :param token: 通过抓包获得的token
         """
         self.session = requests.Session()
+        self.session.verify = False  # 禁用SSL验证
         self.proxy = proxy
         if isinstance(proxy, dict):
             self.session.proxies = proxy
@@ -1259,3 +1260,326 @@ class UUAccount:
                 break
             index += 1
         return purchase_order_list
+
+    # ==================== 购买相关 API ====================
+
+    def pre_check_buy(self, commodity_id: int):
+        """
+        购买前预检查商品是否可购买
+        :param commodity_id: 商品ID (commodityId / skuId)
+        :return: 预检查结果
+        
+        请求示例：
+        {"commodityId":1846870973,"Sessionid":"aWg+Lnv9avkDALCzeQIFwDyx"}
+        
+        响应示例：
+        {"code":0,"msg":"成功","data":{"checkPassed":true,...}}
+        """
+        rsp = self.call_api(
+            "POST",
+            "/api/youpin/bff/trade/v1/order/sell/pre-check",
+            data={
+                "commodityId": commodity_id,
+                "Sessionid": self.deviceToken,
+            },
+        ).json()
+        return rsp
+
+    def query_payment_list(self, order_no: str, payment_amount: str, wait_payment_data_no: str = None):
+        """
+        查询指定订单的可用支付方式
+        :param order_no: 订单号
+        :param payment_amount: 支付金额
+        :param wait_payment_data_no: 待支付数据编号（可选，从创建订单响应中获取）
+        :return: 支付方式列表，包含 payList 和 onlyTradeBalanceInfo
+        
+        请求示例：
+        {
+            "businessType":1,
+            "extend":"{\"appInstall\":false}",
+            "orderNo":"2026020562250769931",
+            "paymentAmount":"515.0",
+            "subBusType":19000,
+            "userId":"3740802",
+            "waitPaymentDataNo":"202602054015671453656",
+            "Sessionid":"..."
+        }
+        """
+        data = {
+            "businessType": 1,
+            "extend": "{\"appInstall\":false}",
+            "orderNo": order_no,
+            "paymentAmount": str(payment_amount),
+            "subBusType": 19000,
+            "userId": str(self.userId),
+            "Sessionid": self.deviceToken,
+        }
+        if wait_payment_data_no:
+            data["waitPaymentDataNo"] = wait_payment_data_no
+        
+        rsp = self.call_api(
+            "POST",
+            "/api/youpin/bff/payment/v1/cashier/query/list",
+            data=data,
+        ).json()
+        return rsp
+
+    def confirm_payment(
+        self, 
+        order_no: str, 
+        payment_amount: str, 
+        mix_pay_details: list,
+        wait_payment_data_no: str,
+        out_trade_no: str = None,
+        channel_id: str = "700",
+        pay_way: int = 17,
+    ):
+        """
+        确认支付（支持混合支付）
+        :param order_no: 订单号
+        :param payment_amount: 总支付金额
+        :param mix_pay_details: 混合支付详情列表，如 [{"amount": "371.45", "payWay": 17}, {"amount": "143.55", "payWay": 7}]
+        :param wait_payment_data_no: 待支付数据编号
+        :param out_trade_no: 外部交易号（可选）
+        :param channel_id: 支付渠道ID，默认700（仅交易余额）
+        :param pay_way: 支付方式，默认17（仅交易余额）
+        :return: 支付结果
+        
+        请求示例：
+        {
+            "businessType":"1",
+            "channelId":"700",
+            "extend":"{\"appInstall\":false}",
+            "mixPayDetails":[{"amount":"371.45","payWay":17},{"amount":"143.55","payWay":7}],
+            "orderNo":"2026020562250769931",
+            "outTradeNo":"202602053846668495",
+            "payWay":17,
+            "paymentAmount":"515",
+            "subBusType":"19000",
+            "waitPaymentDataNo":"202602054015671453656",
+            "Sessionid":"..."
+        }
+        
+        响应示例：
+        {"code":0,"msg":"成功","data":{"payWay":17,"payOrderNo":"202602054015673060542","needPay":0,...}}
+        """
+        # 生成 outTradeNo（如果未提供）
+        if not out_trade_no:
+            import time as _time
+            out_trade_no = f"{_time.strftime('%Y%m%d')}{random.randint(1000000000, 9999999999)}"
+        
+        data = {
+            "businessType": "1",
+            "channelId": str(channel_id),
+            "extend": "{\"appInstall\":false}",
+            "mixPayDetails": mix_pay_details,
+            "orderNo": order_no,
+            "outTradeNo": out_trade_no,
+            "payWay": pay_way,
+            "paymentAmount": str(payment_amount),
+            "subBusType": "19000",
+            "waitPaymentDataNo": wait_payment_data_no,
+            "Sessionid": self.deviceToken,
+        }
+        
+        rsp = self.call_api(
+            "POST",
+            "/api/youpin/bff/payment/v1/pay/order/confirm",
+            data=data,
+        ).json()
+        return rsp
+
+    def query_payment_status(self, order_no: str, pay_order_no: str, wait_payment_data_no: str):
+        """
+        查询支付状态
+        :param order_no: 订单号
+        :param pay_order_no: 支付订单号（从confirm_payment响应中获取）
+        :param wait_payment_data_no: 待支付数据编号
+        :return: 支付状态，payStatus=2 表示支付成功
+        
+        响应示例：
+        {"code":0,"msg":"成功","data":{"payStatus":2,"payStateMsg":"支付成功",...}}
+        """
+        rsp = self.call_api(
+            "POST",
+            "/api/youpin/bff/payment/v1/pay/order/status",
+            data={
+                "businessType": 1,
+                "orderNo": order_no,
+                "payOrderNo": pay_order_no,
+                "subBusType": 19000,
+                "waitPaymentDataNo": wait_payment_data_no,
+                "Sessionid": self.deviceToken,
+            },
+        ).json()
+        return rsp
+
+    def cancel_buy_order(self, order_no: str):
+        """
+        取消购买订单
+        :param order_no: 订单号
+        :return: 取消结果
+        
+        响应示例：
+        {"code":0,"msg":"订单取消中，请稍后查看","data":{"result":2}}
+        """
+        rsp = self.call_api(
+            "POST",
+            "/api/youpin/bff/trade/v1/order/sell/cancelOrder",
+            data={
+                "orderNo": order_no,
+                "Sessionid": self.deviceToken,
+            },
+        ).json()
+        return rsp
+
+    def calculate_payment_strategy(self, payment_data: dict, order_amount: float):
+        """
+        计算支付策略
+        
+        规则：
+        1. 优先使用仅交易余额 (payWay=17)
+        2. 不足部分使用可用余额 (payWay=7) 补齐
+        3. 两种余额总和不够则返回 None
+        4. 绝不使用支付宝(payWay=15)和花呗(payWay=16)
+        
+        :param payment_data: query_payment_list 返回的 data 字段
+        :param order_amount: 订单金额
+        :return: (mix_pay_details, channel_id, pay_way, error_msg)
+                 成功时 error_msg 为 None，失败时 mix_pay_details 为 None
+        """
+        trade_balance_info = payment_data.get("onlyTradeBalanceInfo")
+        available_balance = None
+        available_balance_channel_id = 100
+        
+        # 找到可用余额
+        for pay in payment_data.get("payList", []):
+            if pay["payWay"] == 7:  # 可用余额
+                available_balance = float(pay.get("balance", 0))
+                available_balance_channel_id = pay.get("channelId", 100)
+                break
+        
+        if available_balance is None:
+            return None, None, None, "未找到可用余额支付方式"
+        
+        mix_pay_details = []
+        remaining = float(order_amount)
+        channel_id = available_balance_channel_id
+        pay_way = 7  # 默认使用可用余额
+        
+        # 1. 尝试使用仅交易余额
+        if trade_balance_info and trade_balance_info.get("checked") == 1:
+            trade_balance = float(trade_balance_info.get("balance", 0))
+            inner_pay = min(trade_balance, remaining)
+            if inner_pay > 0:
+                # 使用仅交易余额
+                mix_pay_details.append({"amount": str(round(inner_pay, 2)), "payWay": 17})
+                remaining = round(remaining - inner_pay, 2)
+                channel_id = trade_balance_info.get("channelId", 700)
+                pay_way = 17
+        
+        # 2. 不足部分用可用余额补齐
+        if remaining > 0:
+            if available_balance >= remaining:
+                mix_pay_details.append({"amount": str(round(remaining, 2)), "payWay": 7})
+                remaining = 0
+            else:
+                total_available = (float(trade_balance_info.get("balance", 0)) if trade_balance_info else 0) + available_balance
+                return None, None, None, f"余额不足: 需要 {order_amount} 元，可用总额 {total_available} 元"
+        
+        # 3. 如果完全用可用余额支付
+        if len(mix_pay_details) == 1 and mix_pay_details[0]["payWay"] == 7:
+            channel_id = available_balance_channel_id
+            pay_way = 7
+        
+        logger.info(f"支付策略计算完成: {mix_pay_details}, 渠道ID: {channel_id}, 支付方式: {pay_way}")
+        return mix_pay_details, channel_id, pay_way, None
+
+    def buy_with_balance(self, order_no: str, wait_payment_data_no: str, payment_amount: str = None, max_price: float = None):
+        """
+        使用余额支付订单（封装完整支付流程）
+        
+        策略：
+        1. 优先使用仅交易余额
+        2. 不足部分使用可用余额补齐
+        3. 如果两种余额总和不够，自动取消订单
+        4. 绝不使用支付宝/花呗
+        
+        :param order_no: 订单号（从APP创建订单时获取）
+        :param wait_payment_data_no: 待支付数据编号（从APP创建订单时获取）
+        :param payment_amount: 订单金额（从APP抓包获取，如 "515.0"）
+        :param max_price: 最大允许支付金额（可选，用于二次确认价格）
+        :return: {"success": bool, "message": str, "data": dict}
+        """
+        try:
+            # 1. 查询支付方式
+            logger.info(f"[购买] 查询订单 {order_no} 的支付方式...")
+            # 如果没有提供金额，使用"0"（可能会失败）
+            amount_str = str(payment_amount) if payment_amount else "0"
+            payment_rsp = self.query_payment_list(order_no, amount_str, wait_payment_data_no)
+            
+            if payment_rsp.get("code") != 0:
+                return {"success": False, "message": f"查询支付方式失败: {payment_rsp.get('msg')}", "data": payment_rsp}
+            
+            payment_data = payment_rsp.get("data", {})
+            order_amount = float(payment_data.get("amount", 0))
+            
+            logger.info(f"[购买] 订单金额: {order_amount} 元")
+            
+            # 2. 检查价格限制
+            if max_price and order_amount > max_price:
+                logger.warning(f"[购买] 订单金额 {order_amount} 超过最大限制 {max_price}，取消订单...")
+                self.cancel_buy_order(order_no)
+                return {"success": False, "message": f"订单金额 {order_amount} 超过最大限制 {max_price}", "data": None}
+            
+            # 3. 计算支付策略
+            mix_pay_details, channel_id, pay_way, error = self.calculate_payment_strategy(payment_data, order_amount)
+            
+            if error:
+                logger.warning(f"[购买] {error}，取消订单...")
+                self.cancel_buy_order(order_no)
+                return {"success": False, "message": error, "data": None}
+            
+            # 4. 确认支付
+            logger.info(f"[购买] 开始支付，混合支付详情: {mix_pay_details}")
+            confirm_rsp = self.confirm_payment(
+                order_no=order_no,
+                payment_amount=str(order_amount),
+                mix_pay_details=mix_pay_details,
+                wait_payment_data_no=wait_payment_data_no,
+                channel_id=str(channel_id),
+                pay_way=pay_way,
+            )
+            
+            if confirm_rsp.get("code") != 0:
+                return {"success": False, "message": f"支付确认失败: {confirm_rsp.get('msg')}", "data": confirm_rsp}
+            
+            pay_order_no = confirm_rsp.get("data", {}).get("payOrderNo")
+            need_pay = confirm_rsp.get("data", {}).get("needPay", 0)
+            
+            # needPay=0 表示余额支付完成，无需外部支付
+            if need_pay != 0:
+                return {"success": False, "message": "需要外部支付，但策略禁止使用支付宝/花呗", "data": confirm_rsp}
+            
+            # 5. 查询支付状态
+            logger.info(f"[购买] 查询支付状态...")
+            time.sleep(1)  # 等待支付处理
+            status_rsp = self.query_payment_status(order_no, pay_order_no, wait_payment_data_no)
+            
+            if status_rsp.get("code") == 0:
+                pay_status = status_rsp.get("data", {}).get("payStatus")
+                pay_msg = status_rsp.get("data", {}).get("payStateMsg", "")
+                
+                if pay_status == 2:  # 支付成功
+                    logger.info(f"[购买] ✅ 支付成功! 订单号: {order_no}")
+                    # 刷新余额
+                    self.refresh_balance()
+                    return {"success": True, "message": "支付成功", "data": {"orderNo": order_no, "payOrderNo": pay_order_no, "amount": order_amount}}
+                else:
+                    return {"success": False, "message": f"支付状态异常: {pay_msg}", "data": status_rsp}
+            else:
+                return {"success": False, "message": f"查询支付状态失败: {status_rsp.get('msg')}", "data": status_rsp}
+                
+        except Exception as e:
+            logger.error(f"[购买] 支付过程出错: {e}")
+            return {"success": False, "message": f"支付过程出错: {str(e)}", "data": None}

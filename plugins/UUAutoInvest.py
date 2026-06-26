@@ -208,11 +208,20 @@ class UUAutoInvest:
                 market_price = item.get("yyyp_sell_price", 0)
                 if market_price <= 0:
                     continue
+                
+                # === 新增：读取 buy_limit 作为最高买入价 ===
+                # Scanner 计算的 buy_limit = 求购价区间上限
+                # 这个价格是根据租金回报率、资产评级等因素计算的合理买入价
+                buy_limit = float(item.get("buy_limit", 0) or 0)
+                if buy_limit <= 0:
+                    # 如果没有 buy_limit，使用市场价的 92% 作为默认最高买入价
+                    buy_limit = round(market_price * 0.92, 2)
 
                 candidates.append({
                     "templateId": template_id,
                     "name": name,
                     "market_price": market_price,  # 记录白名单时的售价作为参考
+                    "buy_limit": buy_limit,         # 最高买入价（来自Scanner计算）
                     "tier": tier,                   # 记录评级
                     "roi": roi,
                 })
@@ -662,7 +671,14 @@ class UUAutoInvest:
                     continue
 
                 # 5. 准备下单数据
+                # === 核心改动：使用 buy_limit 作为求购价格上限 ===
+                buy_limit = item.get("buy_limit", 0)
                 target_price = real_time_lowest_price
+                
+                # 如果实时最低售价 > buy_limit，说明当前价格过高，放弃
+                if buy_limit > 0 and target_price > buy_limit:
+                    self.logger.warning(f"📊 {item_name} 当前售价 {target_price:.2f}元 > 最高买入价 {buy_limit:.2f}元，放弃")
+                    continue
                 
                 # 构建信号
                 signal = {
@@ -671,11 +687,12 @@ class UUAutoInvest:
                     "name": item_name,
                     "market_price": real_time_lowest_price,
                     "target_price": target_price,
+                    "buy_limit": buy_limit,  # 记录最高买入价，便于复盘
                     "roi": item.get("roi", 0),
                     "tier": item.get("tier", "Unknown"),
                     "timestamp": datetime.now().isoformat(),
                     "source": "UUAutoInvest_Sniper_V3",
-                    "strategy_version": "v3_direct_sniper"
+                    "strategy_version": "v3_buy_limit_check"
                 }
 
                 self.signal_manager.save_signal(signal)
