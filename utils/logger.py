@@ -112,7 +112,6 @@ logger.debug(f"Running on {platform.system()} {platform.release()}({platform.ver
 logger.debug(f"Python version: {os.sys.version}")  # type: ignore
 logger.debug(f"Build info: {BUILD_INFO}")
 logger.debug(f"Attributes check: _MEIPASS: {hasattr(sys, '_MEIPASS')}, frozen: {hasattr(sys, 'frozen')}")
-logger.debug(f"日志已经经过脱敏处理，请放心转发至公共平台！")
 
 
 def handle_caught_exception(e: Exception, prefix: str = "", known: bool = False):
@@ -141,8 +140,12 @@ def handle_caught_exception(e: Exception, prefix: str = "", known: bool = False)
         plogger.error("如果你正在使用代理或VPN, 请尝试关闭后重启软件")
         plogger.error("如果你没有使用代理或VPN, 请检查网络连接")
     elif isinstance(e, InvalidCredentials):
-        plogger.error("mafile有问题, 请检查mafile是否正确(尤其是identity_secret)")
-        plogger.error(str(e))
+        if "Invalid API key" in str(e):
+            plogger.error("Steam access_token/API 会话已失效，正在或需要重新登录")
+            plogger.error(str(e))
+        else:
+            plogger.error("Steam 登录凭据无效，请检查账号密码或mafile是否正确")
+            plogger.error(str(e))
     elif isinstance(e, ConfirmationExpected):
         plogger.error("Steam Session已经过期, 请删除session文件夹并重启Steamauto")
     elif isinstance(e, SystemError):
@@ -164,7 +167,7 @@ def handle_caught_exception(e: Exception, prefix: str = "", known: bool = False)
             plogger.error(
                 f"当前Steamauto版本：{CURRENT_VERSION}\nPython版本：{os.sys.version}\n系统版本：{platform.system()} {platform.release()}({platform.version()})\n编译信息：{BUILD_INFO}\n"  # type: ignore
             )
-            plogger.error("发生未知异常, 异常信息:" + str(e) + ", 异常类型:" + str(type(e)) + ", 建议反馈至开发者！截图此页面对开发者没有任何帮助！请同时向开发者提供日志文件！")
+            plogger.error("发生未知异常, 异常信息:" + str(e) + ", 异常类型:" + str(type(e)) + " 已记录至日志文件")
 
         if BUILD_INFO == "正在使用源码运行":
             plogger.error(e, exc_info=True)

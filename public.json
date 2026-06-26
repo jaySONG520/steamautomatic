@@ -1,8 +1,68 @@
 {
   "broadcast": {
-    "message": "<yellow>欢迎使用Steamauto 5.0！<reset>"
+    "message": "<yellow>欢迎使用Steamauto 5！<reset>"
   },
   "versions": [
+    {
+      "version": "5.8.6",
+      "changelog": "修复在特定情况下无法自动刷新Steam登录信息的问题",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.8.6/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "windows": "d217a99359ac61e2b443ddb3da79b01a8fd8ab1b59389b5ce1f444a5a1b3ac59"
+      }
+    },
+    {
+      "version": "5.8.5",
+      "changelog": "修复C5平台无法发货的问题",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.8.5/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "windows": "50649d42cf19f9ce698e502cec51388aa29350a10b25da212237a1bd95bba621"
+      }
+    },
+    {
+      "version": "5.8.4",
+      "changelog": "1.增强稳定性\\n2.移除 BUFF自动上架、BUFF自动备注、BUFF利润报告插件",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.8.4/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "windows": "98df08d219fa169a2c62fa29fc637cdf8b5782d61a7d79e363682e54a3108422"
+      }
+    },
+    {
+      "version": "5.8.3",
+      "changelog": "代码整理，程序本体体积优化",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.8.3/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "windows": "aae213d1211d1dc0ce590381904c55572ca96b20c2d45a8bdfd396fec59a2fbd"
+      }
+    },
+    {
+      "version": "5.8.2",
+      "changelog": "修复已知问题、代码优化提升",
+      "level": "stable",
+      "significance": "normal",
+      "download_url": {
+        "windows": "https://github.com/Steamauto/Steamauto/releases/download/5.8.2/Steamauto-windows-latest.exe"
+      },
+      "hash": {
+        "windows": "383b242081274f1e0ce94451d43ac12f383aa8be1d41fa9b249361ed040c76a7"
+      }
+    },
     {
       "version": "5.8.1",
       "changelog": "修复部分插件无法导入导致程序无法启动的问题",
